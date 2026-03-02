@@ -543,20 +543,111 @@ def tank_surface(d_tanc, l_tanc):
 def add_mesh_trace(fig, v, f, name, opacity=1.0):
     if v.size == 0 or f.size == 0:
         return
-    fig.add_trace(
-        go.Mesh3d(
-            x=v[:, 0],
-            y=v[:, 1],
-            z=v[:, 2],
-            i=f[:, 0],
-            j=f[:, 1],
-            k=f[:, 2],
-            opacity=opacity,
-            name=name,
-            hoverinfo="skip",
-            flatshading=True,
-        )
-    )
+    fig.add_trace(go.Mesh3d(
+        x=v[:, 0], y=v[:, 1], z=v[:, 2],
+        i=f[:, 0], j=f[:, 1], k=f[:, 2],
+        opacity=opacity,
+        name=name,
+        hoverinfo="skip",
+        flatshading=False,
+        lighting=dict(ambient=0.25, diffuse=0.8, specular=0.45, roughness=0.5, fresnel=0.1),
+        lightposition=dict(x=2000, y=2000, z=2000)
+    ))
+
+
+# ==========================================================
+# Wireframe helpers (per distingir envasos)
+# ==========================================================
+def add_wireframe_trace(fig, x, y, z, name="Wireframe", width=2, opacity=0.9):
+    fig.add_trace(go.Scatter3d(
+        x=x, y=y, z=z,
+        mode="lines",
+        name=name,
+        hoverinfo="skip",
+        line=dict(width=width),
+        opacity=opacity
+    ))
+
+
+def cylinder_wireframe_points(center, radius, length, axis="Z", nseg=24, n_long=6):
+    cx, cy, cz = center
+    r = radius
+    h = length
+
+    ang = np.linspace(0, 2 * np.pi, nseg, endpoint=True)
+    ca = np.cos(ang)
+    sa = np.sin(ang)
+
+    xs, ys, zs = [], [], []
+
+    def add_polyline(px, py, pz):
+        xs.extend(px)
+        ys.extend(py)
+        zs.extend(pz)
+        xs.append(None)
+        ys.append(None)
+        zs.append(None)
+
+    if axis == "Z":
+        z0 = cz - h / 2.0
+        z1 = cz + h / 2.0
+
+        add_polyline(list(cx + r * ca), list(cy + r * sa), [z0] * len(ang))
+        add_polyline(list(cx + r * ca), list(cy + r * sa), [z1] * len(ang))
+
+        for k in range(n_long):
+            a = 2 * math.pi * k / n_long
+            x = cx + r * math.cos(a)
+            y = cy + r * math.sin(a)
+            add_polyline([x, x], [y, y], [z0, z1])
+
+    elif axis == "X":
+        x0 = cx - h / 2.0
+        x1 = cx + h / 2.0
+
+        add_polyline([x0] * len(ang), list(cy + r * ca), list(cz + r * sa))
+        add_polyline([x1] * len(ang), list(cy + r * ca), list(cz + r * sa))
+
+        for k in range(n_long):
+            a = 2 * math.pi * k / n_long
+            y = cy + r * math.cos(a)
+            z = cz + r * math.sin(a)
+            add_polyline([x0, x1], [y, y], [z, z])
+
+    else:
+        raise ValueError("axis must be 'Z' or 'X'")
+
+    return xs, ys, zs
+
+
+def boxes_wireframe_points(centers_xyz, sx, sy, sz):
+    hx, hy, hz = sx / 2.0, sy / 2.0, sz / 2.0
+    edges = [
+        (0, 1), (1, 2), (2, 3), (3, 0),
+        (4, 5), (5, 6), (6, 7), (7, 4),
+        (0, 4), (1, 5), (2, 6), (3, 7)
+    ]
+
+    xs, ys, zs = [], [], []
+    for (cx, cy, cz) in centers_xyz:
+        v = [
+            (cx - hx, cy - hy, cz - hz),
+            (cx + hx, cy - hy, cz - hz),
+            (cx + hx, cy + hy, cz - hz),
+            (cx - hx, cy + hy, cz - hz),
+            (cx - hx, cy - hy, cz + hz),
+            (cx + hx, cy - hy, cz + hz),
+            (cx + hx, cy + hy, cz + hz),
+            (cx - hx, cy + hy, cz + hz),
+        ]
+        for (a, b) in edges:
+            xa, ya, za = v[a]
+            xb, yb, zb = v[b]
+            xs.extend([xa, xb, None])
+            ys.extend([ya, yb, None])
+            zs.extend([za, zb, None])
+
+    return xs, ys, zs
 
 
 # ==========================================================
@@ -574,6 +665,13 @@ with st.sidebar:
     st.subheader("3D Quality / Performance")
     cyl_segments = st.slider("Segments cilindre (més = més bonic, més lent)", 8, 24, 12, 1)
     caps = st.checkbox("Tancar cilindres (caps)", value=True)
+
+    st.subheader("Visualització 3D")
+    show_wireframe = st.checkbox("Mostrar contorns (wireframe)", value=True)
+    wire_nseg = st.slider("Detall contorns (segments)", 12, 40, 24, 2)
+    wire_width = st.slider("Gruix contorn", 1, 6, 3, 1)
+    shrink = st.slider("Separació visual envasos (%)", 0, 6, 2, 1)
+    shrink_factor = 1.0 - (shrink / 100.0)
 
     st.subheader("Costos (opcional)")
     cost_per_cycle = st.number_input("Cost per cicle (€)", min_value=0.0, value=63.0, step=1.0)
@@ -600,12 +698,8 @@ if forma == "Cilíndric":
 
     with col2:
         st.subheader("Resultat")
-        st.write(
-            f"**L1** ({int(L1_MM)} mm): cap **{cap1}** u | ocupat **{perc1:.2f}%** | contenidors **{dec['contenidors']['L1']}** | buit últim **{dec['buit']['L1']}** u"
-        )
-        st.write(
-            f"**L2** ({int(L2_MM)} mm): cap **{cap2}** u | ocupat **{perc2:.2f}%** | contenidors **{dec['contenidors']['L2']}** | buit últim **{dec['buit']['L2']}** u"
-        )
+        st.write(f"**L1** ({int(L1_MM)} mm): cap **{cap1}** u | ocupat **{perc1:.2f}%** | contenidors **{dec['contenidors']['L1']}** | buit últim **{dec['buit']['L1']}** u")
+        st.write(f"**L2** ({int(L2_MM)} mm): cap **{cap2}** u | ocupat **{perc2:.2f}%** | contenidors **{dec['contenidors']['L2']}** | buit últim **{dec['buit']['L2']}** u")
         st.success(f"✅ Millor opció: **{dec['best']}**  ({int(bestL)} mm)")
         st.write(f"Unitats a l’últim contenidor: **{unitats_ultim}**")
 
@@ -614,16 +708,12 @@ if forma == "Cilíndric":
 
         st.markdown("### Desglossament per capes (millor contenidor)")
         st.write(f"Unitats per capa (vertical): **{break_best['per_layer_vertical']}**")
-        st.write(
-            f"Capes verticals: **{break_best['layers_vertical']}** → Total vertical: **{break_best['total_vertical']}**"
-        )
+        st.write(f"Capes verticals: **{break_best['layers_vertical']}** → Total vertical: **{break_best['total_vertical']}**")
         st.write(f"Alçada restant: **{break_best['h_restant_mm']:.1f} mm**")
 
         if break_best["layers_tombades"] > 0:
             st.write(f"Unitats per capa (tombada): **{break_best['per_layer_tombada']}**")
-            st.write(
-                f"Capes tombades: **{break_best['layers_tombades']}** → Total tombat: **{break_best['total_tombades']}**"
-            )
+            st.write(f"Capes tombades: **{break_best['layers_tombades']}** → Total tombat: **{break_best['total_tombades']}**")
         else:
             st.write("Capes tombades: **0**")
 
@@ -636,16 +726,6 @@ if forma == "Cilíndric":
     st.subheader("3D — Cilindres (totes les capes, verticals + tombades)")
 
     df = coords_cyl_all(d_tanc, bestL, d_amp, h_amp)
-    n_total = len(df)
-
-    tri_per_cyl = (2 * cyl_segments) + (2 * cyl_segments if caps else 0)
-    tri_est = n_total * tri_per_cyl
-
-    if tri_est > 2_000_000:
-        st.warning(
-            f"Aquest cas és molt pesat (estimació ~{tri_est:,} triangles). "
-            "Si va lent: baixa 'Segments cilindre' a 8–10."
-        )
 
     v_centers = df[df["type"] == "V"][["x", "y", "z"]].to_numpy()
     h_centers = df[df["type"] == "H"][["x", "y", "z"]].to_numpy()
@@ -655,18 +735,33 @@ if forma == "Cilíndric":
     X, Y, Z = tank_surface(d_tanc, bestL)
     fig.add_trace(go.Surface(x=X, y=Y, z=Z, opacity=0.08, showscale=False, hoverinfo="skip", name="Tank"))
 
-    r = d_amp / 2.0
+    r = (d_amp / 2.0) * shrink_factor
+    h_vis = h_amp * shrink_factor
+
     if len(v_centers) > 0:
-        vmesh, vfaces = mesh_from_cylinders(
-            v_centers, radius=r, length=h_amp, axis="Z", nseg=cyl_segments, caps=caps
-        )
+        vmesh, vfaces = mesh_from_cylinders(v_centers, radius=r, length=h_vis, axis="Z", nseg=cyl_segments, caps=caps)
         add_mesh_trace(fig, vmesh, vfaces, "Vertical", opacity=1.0)
 
     if len(h_centers) > 0:
-        hmesh, hfaces = mesh_from_cylinders(
-            h_centers, radius=r, length=h_amp, axis="X", nseg=cyl_segments, caps=caps
-        )
+        hmesh, hfaces = mesh_from_cylinders(h_centers, radius=r, length=h_vis, axis="X", nseg=cyl_segments, caps=caps)
         add_mesh_trace(fig, hmesh, hfaces, "Horizontal", opacity=1.0)
+
+    if show_wireframe:
+        # Wireframe vertical
+        if len(v_centers) > 0:
+            xw, yw, zw = [], [], []
+            for (x, y, z) in v_centers:
+                xs, ys, zs = cylinder_wireframe_points((x, y, z), r, h_vis, axis="Z", nseg=wire_nseg, n_long=6)
+                xw += xs; yw += ys; zw += zs
+            add_wireframe_trace(fig, xw, yw, zw, name="Contorns Vertical", width=wire_width, opacity=0.95)
+
+        # Wireframe horizontal
+        if len(h_centers) > 0:
+            xw, yw, zw = [], [], []
+            for (x, y, z) in h_centers:
+                xs, ys, zs = cylinder_wireframe_points((x, y, z), r, h_vis, axis="X", nseg=wire_nseg, n_long=6)
+                xw += xs; yw += ys; zw += zs
+            add_wireframe_trace(fig, xw, yw, zw, name="Contorns Tombada", width=wire_width, opacity=0.95)
 
     fig.update_layout(
         scene=dict(xaxis_title="X (mm)", yaxis_title="Y (mm)", zaxis_title="Z (mm)", aspectmode="data"),
@@ -688,20 +783,16 @@ else:
     dec = decideix_millor(int(N), cap1, perc1, cap2, perc2, "L1", "L2")
 
     bestL = L1_MM if dec["best"] == "L1" else L2_MM
-    bestCap = cap1 if bestL == L1_MM else cap2
     bestCont = dec["contenidors"][dec["best"]]
+    bestCap = cap1 if bestL == L1_MM else cap2
     unitats_ultim = int(N - (bestCont - 1) * bestCap) if bestCont > 1 else int(N)
 
     break_best = breakdown_rectangular(d_tanc, bestL, w_env, d_env, h_env)
 
     with col2:
         st.subheader("Resultat")
-        st.write(
-            f"**L1** ({int(L1_MM)} mm): cap **{cap1}** u | ocupat **{perc1:.2f}%** | contenidors **{dec['contenidors']['L1']}** | buit últim **{dec['buit']['L1']}** u"
-        )
-        st.write(
-            f"**L2** ({int(L2_MM)} mm): cap **{cap2}** u | ocupat **{perc2:.2f}%** | contenidors **{dec['contenidors']['L2']}** | buit últim **{dec['buit']['L2']}** u"
-        )
+        st.write(f"**L1** ({int(L1_MM)} mm): cap **{cap1}** u | ocupat **{perc1:.2f}%** | contenidors **{dec['contenidors']['L1']}** | buit últim **{dec['buit']['L1']}** u")
+        st.write(f"**L2** ({int(L2_MM)} mm): cap **{cap2}** u | ocupat **{perc2:.2f}%** | contenidors **{dec['contenidors']['L2']}** | buit últim **{dec['buit']['L2']}** u")
         st.success(f"✅ Millor opció: **{dec['best']}**  ({int(bestL)} mm)")
         st.write(f"Unitats a l’últim contenidor: **{unitats_ultim}**")
 
@@ -710,17 +801,13 @@ else:
 
         st.markdown("### Desglossament per capes (millor contenidor)")
         st.write(f"Unitats per capa (vertical): **{break_best['per_layer_vertical']}**")
-        st.write(
-            f"Capes verticals: **{break_best['layers_vertical']}** → Total vertical: **{break_best['total_vertical']}**"
-        )
+        st.write(f"Capes verticals: **{break_best['layers_vertical']}** → Total vertical: **{break_best['total_vertical']}**")
         st.write(f"Alçada restant: **{break_best['h_restant_mm']:.1f} mm**")
 
         if break_best["layers_tombades"] > 0:
             st.write(f"Mode tombat triat: **{break_best['tombada_mode']}**")
             st.write(f"Unitats per capa (tombada): **{break_best['per_layer_tombada']}**")
-            st.write(
-                f"Capes tombades: **{break_best['layers_tombades']}** → Total tombat: **{break_best['total_tombades']}**"
-            )
+            st.write(f"Capes tombades: **{break_best['layers_tombades']}** → Total tombat: **{break_best['total_tombades']}**")
         else:
             st.write("Capes tombades: **0**")
 
@@ -738,28 +825,39 @@ else:
     a_centers = df[df["type"] == "A"][["x", "y", "z"]].to_numpy()
     b_centers = df[df["type"] == "B"][["x", "y", "z"]].to_numpy()
 
-    tri_est = (len(v_centers) + len(a_centers) + len(b_centers)) * 12
-    if tri_est > 1_500_000:
-        st.warning(
-            f"Aquest cas és pesat (estimació ~{tri_est:,} triangles). "
-            "Si va lent, et puc afegir un 'LOD' automàtic (però continuar veient-ho tot)."
-        )
-
     fig = go.Figure()
     X, Y, Z = tank_surface(d_tanc, bestL)
     fig.add_trace(go.Surface(x=X, y=Y, z=Z, opacity=0.08, showscale=False, hoverinfo="skip", name="Tank"))
 
+    # shrinked sizes for visibility
+    wv = w_env * shrink_factor
+    dv = d_env * shrink_factor
+    hv = h_env * shrink_factor
+
     if len(v_centers) > 0:
-        vmesh, vfaces = mesh_from_boxes(v_centers, sx=w_env, sy=d_env, sz=h_env)
+        vmesh, vfaces = mesh_from_boxes(v_centers, sx=wv, sy=dv, sz=hv)
         add_mesh_trace(fig, vmesh, vfaces, "Vertical", opacity=1.0)
 
     if len(a_centers) > 0:
-        amesh, afaces = mesh_from_boxes(a_centers, sx=h_env, sy=d_env, sz=w_env)
+        amesh, afaces = mesh_from_boxes(a_centers, sx=hv, sy=dv, sz=wv)
         add_mesh_trace(fig, amesh, afaces, "Horizontal_A", opacity=1.0)
 
     if len(b_centers) > 0:
-        bmesh, bfaces = mesh_from_boxes(b_centers, sx=w_env, sy=h_env, sz=d_env)
+        bmesh, bfaces = mesh_from_boxes(b_centers, sx=wv, sy=hv, sz=dv)
         add_mesh_trace(fig, bmesh, bfaces, "Horizontal_B", opacity=1.0)
+
+    if show_wireframe:
+        if len(v_centers) > 0:
+            xw, yw, zw = boxes_wireframe_points(v_centers, wv, dv, hv)
+            add_wireframe_trace(fig, xw, yw, zw, name="Contorns Vertical", width=wire_width, opacity=0.95)
+
+        if len(a_centers) > 0:
+            xw, yw, zw = boxes_wireframe_points(a_centers, hv, dv, wv)
+            add_wireframe_trace(fig, xw, yw, zw, name="Contorns Tombada_A", width=wire_width, opacity=0.95)
+
+        if len(b_centers) > 0:
+            xw, yw, zw = boxes_wireframe_points(b_centers, wv, hv, dv)
+            add_wireframe_trace(fig, xw, yw, zw, name="Contorns Tombada_B", width=wire_width, opacity=0.95)
 
     fig.update_layout(
         scene=dict(xaxis_title="X (mm)", yaxis_title="Y (mm)", zaxis_title="Z (mm)", aspectmode="data"),
