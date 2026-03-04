@@ -1,16 +1,42 @@
+# -*- coding: utf-8 -*-
 import math
+import json
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="HPP Load Planner — 3D solids", layout="wide")
+st.set_page_config(page_title="HPP Load Planner — Matemàtica + 3D", layout="wide")
 
-# =========================
-# CONFIG CONTENIDORS (mm)
-# =========================
+# ==========================================================
+# CONFIG CONTENIDORS (mm) — FIXOS
+# ==========================================================
 L1_MM = 880.0
 L2_MM = 1190.0
+NAME_L1 = "Contenidor petit"
+NAME_L2 = "Contenidor gran"
+
+# ==========================================================
+# COSTOS FIXOS (confirmats) — JA INCLOUEN MÀ D’OBRA
+# ==========================================================
+COST_420 = 43.90    # €/cicle (inclou mà d'obra)
+COST_525 = 50.42    # €/cicle (inclou mà d'obra)
+
+# ==========================================================
+# LONGITUD ÚTIL VASIJA — FIXA (sense input)
+# ==========================================================
+LEN_420_MM = 3700.0
+LEN_525_MM = 4630.0
+
+# ==========================================================
+# 3D DEFAULTS (sense sliders)
+# ==========================================================
+CYL_SEGMENTS = 18
+CAPS = True
+SHOW_WIREFRAME = True
+WIRE_NSEG = 34
+WIRE_WIDTH = 4
+SHRINK_FACTOR = 0.985
 
 # ==========================================================
 #              MATEMÀTICA CILÍNDRICA
@@ -127,7 +153,7 @@ def genera_rectangular_optimitzat(R_tanc, dim_x, dim_y):
 
 
 # ==========================================================
-#        STATS + BREAKDOWN (capes, unitats/capa, etc.)
+#        STATS (capacitat i % volum)
 # ==========================================================
 def stats_cilindric(d_tanc, l_tanc, d_amp, h_amp):
     R_tanc = d_tanc / 2.0
@@ -158,7 +184,7 @@ def stats_cilindric(d_tanc, l_tanc, d_amp, h_amp):
 def stats_rectangular(d_tanc, l_tanc, w_env, d_env, h_env):
     R_tanc = d_tanc / 2.0
 
-    centres_v, angle_v = genera_rectangular_optimitzat(R_tanc, w_env, d_env)
+    centres_v, _ = genera_rectangular_optimitzat(R_tanc, w_env, d_env)
     per_layer = len(centres_v)
     layers = math.floor(l_tanc / h_env)
     total_verticals = per_layer * layers
@@ -166,11 +192,11 @@ def stats_rectangular(d_tanc, l_tanc, w_env, d_env, h_env):
     h_restant = l_tanc - (layers * h_env)
 
     capes_a = int(math.floor(h_restant / w_env))
-    centres_a, angle_a = genera_rectangular_optimitzat(R_tanc, h_env, d_env) if capes_a > 0 else ([], 0)
+    centres_a, _ = genera_rectangular_optimitzat(R_tanc, h_env, d_env) if capes_a > 0 else ([], 0)
     total_a = capes_a * len(centres_a)
 
     capes_b = int(math.floor(h_restant / d_env))
-    centres_b, angle_b = genera_rectangular_optimitzat(R_tanc, w_env, h_env) if capes_b > 0 else ([], 0)
+    centres_b, _ = genera_rectangular_optimitzat(R_tanc, w_env, h_env) if capes_b > 0 else ([], 0)
     total_b = capes_b * len(centres_b)
 
     total_tombades = total_a if total_a >= total_b else total_b
@@ -184,160 +210,243 @@ def stats_rectangular(d_tanc, l_tanc, w_env, d_env, h_env):
     return total, perc
 
 
-def breakdown_cilindric(d_tanc, l_tanc, d_amp, h_amp):
-    R_tanc = d_tanc / 2.0
-    r_amp = d_amp / 2.0
-
-    centres_v = genera_hexagonal_optimitzat(R_tanc, r_amp)
-    per_layer_v = len(centres_v)
-
-    layers_v = int(math.floor(l_tanc / h_amp))
-    total_v = per_layer_v * layers_v
-
-    h_restant = l_tanc - layers_v * h_amp
-
-    layers_h = int(math.floor(h_restant / d_amp))
-    per_layer_h = 0
-    total_h = 0
-    if layers_h > 0:
-        centres_h = genera_horizontals(R_tanc, h_amp, d_amp)
-        per_layer_h = len(centres_h)
-        total_h = per_layer_h * layers_h
-
-    total = int(total_v + total_h)
+# ==========================================================
+#   OPTIMITZACIÓ MÀQUINA: combinacions FIXES per cicle
+# ==========================================================
+def fixed_mix_per_cycle(machine_name, vessel_len_mm, L1_mm, L2_mm, cap_L1, cap_L2):
+    """
+    ÚNIQUES combinacions permeses:
+      - H420: 4 petits  OR  3 grans
+      - H525: 5 petits  OR  3 grans + 1 petit
+    """
+    if "420" in machine_name:
+        combos = [(4, 0), (0, 3)]
+    else:
+        combos = [(5, 0), (1, 3)]
 
     rows = []
-    for k in range(layers_v):
-        rows.append({"capa": k + 1, "tipus": "Vertical", "unitats": per_layer_v, "altura_unitat_mm": h_amp})
-    for k in range(layers_h):
-        rows.append({"capa": layers_v + k + 1, "tipus": "Tombada", "unitats": per_layer_h, "altura_unitat_mm": d_amp})
+    for (k_p, k_g) in combos:
+        used = k_p * float(L1_mm) + k_g * float(L2_mm)
+        if used <= float(vessel_len_mm) and (k_p + k_g) > 0:
+            units = int(k_p) * int(cap_L1) + int(k_g) * int(cap_L2)
+            rows.append({
+                "k_petit": int(k_p),
+                "k_gran": int(k_g),
+                "contenidors/cicle": int(k_p + k_g),
+                "unitats/cicle": int(units),
+            })
 
-    df_layers = pd.DataFrame(rows)
-
-    return {
-        "per_layer_vertical": int(per_layer_v),
-        "layers_vertical": int(layers_v),
-        "total_vertical": int(total_v),
-        "h_restant_mm": float(h_restant),
-        "per_layer_tombada": int(per_layer_h),
-        "layers_tombades": int(layers_h),
-        "total_tombades": int(total_h),
-        "total": int(total),
-        "df_layers": df_layers,
-    }
+    return pd.DataFrame(rows)
 
 
-def breakdown_rectangular(d_tanc, l_tanc, w_env, d_env, h_env):
-    R_tanc = d_tanc / 2.0
+def pick_best_mix(df_mix, N, cost_per_cycle, objective: str):
+    if df_mix is None or df_mix.empty:
+        return None, None
 
-    centres_v, angle_v = genera_rectangular_optimitzat(R_tanc, w_env, d_env)
-    per_layer_v = len(centres_v)
+    df = df_mix.copy()
+    df["cicles"] = df["unitats/cicle"].apply(lambda u: int(math.ceil(N / u)) if u > 0 else 10**9)
+    df["cost_total"] = df["cicles"] * float(cost_per_cycle)
 
-    layers_v = int(math.floor(l_tanc / h_env))
-    total_v = per_layer_v * layers_v
-    h_restant = l_tanc - layers_v * h_env
+    if objective == "Minimitzar cicles":
+        sort_by = ["cicles", "cost_total", "unitats/cicle"]
+        asc =     [True,    True,        False]
+    elif objective == "Minimitzar cost total":
+        sort_by = ["cost_total", "cicles", "unitats/cicle"]
+        asc =     [True,         True,     False]
+    elif objective == "Maximitzar unitats/cicle":
+        sort_by = ["unitats/cicle", "cicles", "cost_total"]
+        asc =     [False,          True,     True]
+    else:  # Balanced
+        sort_by = ["cicles", "cost_total", "unitats/cicle"]
+        asc =     [True,    True,         False]
 
-    layers_a = int(math.floor(h_restant / w_env))
-    per_layer_a = 0
-    total_a = 0
-    angle_a = 0
-    if layers_a > 0:
-        centres_a, angle_a = genera_rectangular_optimitzat(R_tanc, h_env, d_env)
-        per_layer_a = len(centres_a)
-        total_a = per_layer_a * layers_a
-
-    layers_b = int(math.floor(h_restant / d_env))
-    per_layer_b = 0
-    total_b = 0
-    angle_b = 0
-    if layers_b > 0:
-        centres_b, angle_b = genera_rectangular_optimitzat(R_tanc, w_env, h_env)
-        per_layer_b = len(centres_b)
-        total_b = per_layer_b * layers_b
-
-    if total_a >= total_b and total_a > 0:
-        chosen = "A"
-        layers_h = layers_a
-        per_layer_h = per_layer_a
-        total_h = total_a
-        altura_capa_h = w_env
-        angle_h = angle_a
-    elif total_b > 0:
-        chosen = "B"
-        layers_h = layers_b
-        per_layer_h = per_layer_b
-        total_h = total_b
-        altura_capa_h = d_env
-        angle_h = angle_b
-    else:
-        chosen = "-"
-        layers_h = 0
-        per_layer_h = 0
-        total_h = 0
-        altura_capa_h = 0
-        angle_h = 0
-
-    total = int(total_v + total_h)
-
-    rows = []
-    for k in range(layers_v):
-        rows.append({"capa": k + 1, "tipus": "Vertical", "unitats": per_layer_v, "altura_unitat_mm": h_env})
-    for k in range(layers_h):
-        rows.append({"capa": layers_v + k + 1, "tipus": f"Tombada_{chosen}", "unitats": per_layer_h, "altura_unitat_mm": altura_capa_h})
-
-    df_layers = pd.DataFrame(rows)
-
-    return {
-        "per_layer_vertical": int(per_layer_v),
-        "layers_vertical": int(layers_v),
-        "total_vertical": int(total_v),
-        "h_restant_mm": float(h_restant),
-        "tombada_mode": chosen,
-        "per_layer_tombada": int(per_layer_h),
-        "layers_tombades": int(layers_h),
-        "total_tombades": int(total_h),
-        "angle_vertical_rad": float(angle_v),
-        "angle_tombada_rad": float(angle_h),
-        "total": int(total),
-        "df_layers": df_layers,
-    }
+    df = df.sort_values(by=sort_by, ascending=asc, kind="mergesort").reset_index(drop=True)
+    return df.iloc[0].to_dict(), df
 
 
-# ==========================================================
-#                 DECISIÓ CONTENIDOR
-# ==========================================================
-def decideix_millor(N, cap1, perc1, cap2, perc2, nom1="L1", nom2="L2"):
-    cont1 = math.ceil(N / cap1) if cap1 > 0 else 10 ** 9
-    cont2 = math.ceil(N / cap2) if cap2 > 0 else 10 ** 9
-    buit1 = cont1 * cap1 - N
-    buit2 = cont2 * cap2 - N
+def units_last_container_last_cycle(N, k_petit, k_gran, cap_petit, cap_gran):
+    """
+    Supòsit:
+    - A cada cicle omples contenidors en aquest ordre: primer GRANS, després PETITS.
+    - Retorna quantes unitats té l'últim contenidor de l'últim cicle.
+    """
+    caps = ([int(cap_gran)] * int(k_gran)) + ([int(cap_petit)] * int(k_petit))
+    if not caps:
+        return 0, 0, 0
 
-    if cont1 < cont2:
-        best = nom1
-    elif cont2 < cont1:
-        best = nom2
-    else:
-        if buit1 < buit2:
-            best = nom1
-        elif buit2 < buit1:
-            best = nom2
+    units_per_cycle = int(k_petit) * int(cap_petit) + int(k_gran) * int(cap_gran)
+    if units_per_cycle <= 0:
+        return 0, caps[-1], 10**9
+
+    cycles = int(math.ceil(int(N) / units_per_cycle))
+    rem = int(int(N) - (cycles - 1) * units_per_cycle)
+
+    if rem == 0:
+        return int(caps[-1]), int(caps[-1]), cycles
+
+    for cap in caps:
+        if rem > cap:
+            rem -= cap
         else:
-            if perc1 > perc2:
-                best = nom1
-            elif perc2 > perc1:
-                best = nom2
-            else:
-                best = nom1 if cap1 >= cap2 else nom2
+            return int(rem), int(cap), cycles
 
+    return int(caps[-1]), int(caps[-1]), cycles
+
+
+def machine_key(best, objective):
+    if best is None:
+        return (10**9, float("inf"), 0)
+
+    c = int(best["cicles"])
+    cost = float(best["cost_total"])
+    u = int(best["unitats/cicle"])
+
+    if objective == "Minimitzar cicles":
+        return (c, cost, -u)
+    elif objective == "Minimitzar cost total":
+        return (cost, c, -u)
+    elif objective == "Maximitzar unitats/cicle":
+        return (-u, c, cost)
+    else:
+        return (c, cost, -u)
+
+
+# ==========================================================
+#   TEXTOS (plan operatiu + export)
+# ==========================================================
+def plan_text(machine_name, best_row, N, cap_petit, cap_gran, objective, name_L1, name_L2, cost_per_cycle):
+    if best_row is None:
+        return f"- {machine_name}: cap combinació vàlida."
+
+    k_p = int(best_row["k_petit"])
+    k_g = int(best_row["k_gran"])
+    u_cycle = int(best_row["unitats/cicle"])
+    cycles = int(best_row["cicles"])
+    cost_total = float(best_row["cost_total"])
+    u_last, cap_last, _ = units_last_container_last_cycle(int(N), k_p, k_g, int(cap_petit), int(cap_gran))
+
+    lines = []
+    lines.append(f"**{machine_name}**")
+    lines.append(f"- **Cost fix (inclou mà d'obra):** {float(cost_per_cycle):.2f} €/cicle")
+    lines.append(f"- **Configuració per cicle:** {k_g}×{name_L2} + {k_p}×{name_L1}")
+    lines.append(f"- **Rendiment:** {u_cycle} u/cicle  →  **{cycles} cicles** per fer N={int(N)}")
+    lines.append(f"- **Cost total estimat:** {cost_total:.2f} €")
+    lines.append(f"- **Últim contenidor de l’últim cicle:** {u_last} u (capacitat contenidor: {cap_last})")
+
+    if objective == "Minimitzar cicles":
+        lines.append("- **Objectiu:** menys cicles.")
+    elif objective == "Minimitzar cost total":
+        lines.append("- **Objectiu:** menor cost total.")
+    elif objective == "Maximitzar unitats/cicle":
+        lines.append("- **Objectiu:** màxim throughput (u/cicle).")
+    else:
+        lines.append("- **Objectiu:** equilibrat (cicles → cost).")
+
+    return "\n".join(lines)
+
+
+def build_plan_txt(
+    N, d_tanc, forma, objective,
+    cap_petit, cap_gran, perc_petit, perc_gran,
+    best_420, best_525,
+    chosen_machine,
+):
+    def row_summary(machine, best):
+        if best is None:
+            return f"- {machine}: cap combinació possible."
+        return (
+            f"- {machine}: k_petit={int(best['k_petit'])}, k_gran={int(best['k_gran'])}, "
+            f"unitats/cicle={int(best['unitats/cicle'])}, cicles={int(best['cicles'])}, "
+            f"cost_total={float(best['cost_total']):.2f}€"
+        )
+
+    lines = []
+    lines.append("HPP LOAD PLANNER — PLA DE PRODUCCIÓ")
+    lines.append("")
+    lines.append("INPUTS")
+    lines.append(f"- N (unitats comanda): {int(N)}")
+    lines.append(f"- Diàmetre tanc: {float(d_tanc):.1f} mm")
+    lines.append(f"- Forma producte: {forma}")
+    lines.append(f"- Objectiu: {objective}")
+    lines.append("")
+    lines.append("CONTENIDORS (CAPACITAT)")
+    lines.append(f"- {NAME_L1} ({int(L1_MM)} mm): {int(cap_petit)} u  | ocupació volum: {float(perc_petit):.2f}%")
+    lines.append(f"- {NAME_L2} ({int(L2_MM)} mm): {int(cap_gran)} u  | ocupació volum: {float(perc_gran):.2f}%")
+    lines.append("")
+    lines.append("MÀQUINES (COST FIX €/CICLE + LONGITUD ÚTIL)")
+    lines.append(f"- HIPERBARIC 420: {COST_420:.2f} €/cicle | longitud útil: {float(LEN_420_MM):.0f} mm")
+    lines.append(f"- HIPERBARIC 525: {COST_525:.2f} €/cicle | longitud útil: {float(LEN_525_MM):.0f} mm")
+    lines.append("")
+    lines.append("RESULTATS (RESUM)")
+    lines.append(row_summary("HIPERBARIC 420", best_420))
+    lines.append(row_summary("HIPERBARIC 525", best_525))
+    lines.append("")
+    lines.append(f"RECOMANACIÓ: {chosen_machine}")
+    lines.append("")
+
+    best_winner = best_420 if chosen_machine.endswith("420") else best_525
+    if best_winner is not None:
+        k_p = int(best_winner["k_petit"])
+        k_g = int(best_winner["k_gran"])
+        u_last, cap_last, cycles = units_last_container_last_cycle(int(N), k_p, k_g, int(cap_petit), int(cap_gran))
+        lines.append("DETALL OPERATIU (RECOMANACIÓ)")
+        lines.append(f"- Cicles totals: {cycles}")
+        lines.append(f"- Configuració per cicle: {k_g}×{NAME_L2} + {k_p}×{NAME_L1}")
+        lines.append(f"- Últim contenidor (últim cicle): {u_last} u (capacitat {cap_last})")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def build_export_payload(
+    N, d_tanc, forma, objective,
+    cap_petit, cap_gran, perc_petit, perc_gran,
+    best_420, best_525,
+    chosen_machine
+):
     return {
-        "best": best,
-        "contenidors": {nom1: cont1, nom2: cont2},
-        "buit": {nom1: buit1, nom2: buit2},
+        "inputs": {
+            "N": int(N),
+            "d_tanc_mm": float(d_tanc),
+            "forma": forma,
+            "objective": objective,
+        },
+        "contenidors": {
+            "petit": {"length_mm": float(L1_MM), "capacitat_unitats": int(cap_petit), "ocupacio_pct": float(perc_petit)},
+            "gran":  {"length_mm": float(L2_MM), "capacitat_unitats": int(cap_gran),  "ocupacio_pct": float(perc_gran)},
+        },
+        "maquines": {
+            "HIPERBARIC 420": {"vessel_len_mm": float(LEN_420_MM), "cost_eur_per_cycle": float(COST_420), "best": best_420},
+            "HIPERBARIC 525": {"vessel_len_mm": float(LEN_525_MM), "cost_eur_per_cycle": float(COST_525), "best": best_525},
+        },
+        "recomanacio": {
+            "machine": chosen_machine,
+        }
     }
 
 
 # ==========================================================
-#         COORDS 3D segons la teva lògica (centres)
+#   COST REAL (DECISIÓ OPTIM vs RÀPID)
+#   IMPORTANT: el cost/cicle ja inclou mà d’obra → NO sumem cost d’operari.
+#   L’únic que usem dels temps és una decisió “operativa” basada en cicles i throughput.
+#
+#   Per modelar PERFECTE la diferència OPTIM vs RÀPID (si cost/cicle és tot-inclòs),
+#   falta una dada: com canvia el cost/cicle amb el temps/ritme real (normalment NO canvia).
+#   Si realment és fix, la decisió econòmica depèn només de cicles (i de densitat).
+# ==========================================================
+def best_total_cost_cycles_only(df_mix, N, cost_per_cycle):
+    if df_mix is None or df_mix.empty:
+        return None, None
+
+    df = df_mix.copy()
+    df["cicles"] = df["unitats/cicle"].apply(lambda u: int(math.ceil(N / u)) if u > 0 else 10**9)
+    df["cost_total"] = df["cicles"] * float(cost_per_cycle)
+    df = df.sort_values(by=["cost_total", "cicles", "unitats/cicle"], ascending=[True, True, False], kind="mergesort").reset_index(drop=True)
+    return df.iloc[0].to_dict(), df
+
+
+# ==========================================================
+#         COORDS 3D (centres)
 # ==========================================================
 def coords_cyl_all(d_tanc, l_tanc, d_amp, h_amp):
     R_tanc = d_tanc / 2.0
@@ -351,10 +460,7 @@ def coords_cyl_all(d_tanc, l_tanc, d_amp, h_amp):
     for k in range(layers_v):
         z = (k * h_amp) + (h_amp / 2.0)
         for (x, y) in centres_v:
-            xs.append(x)
-            ys.append(y)
-            zs.append(z)
-            typ.append("V")
+            xs.append(x); ys.append(y); zs.append(z); typ.append("V")
 
     h_restant = l_tanc - (layers_v * h_amp)
     capes_tombades = int(math.floor(h_restant / d_amp))
@@ -363,10 +469,7 @@ def coords_cyl_all(d_tanc, l_tanc, d_amp, h_amp):
         for capa in range(capes_tombades):
             z = (layers_v * h_amp) + r_amp + (capa * d_amp)
             for (x, y) in centres_h:
-                xs.append(x)
-                ys.append(y)
-                zs.append(z)
-                typ.append("H")
+                xs.append(x); ys.append(y); zs.append(z); typ.append("H")
 
     return pd.DataFrame({"x": xs, "y": ys, "z": zs, "type": typ})
 
@@ -382,10 +485,7 @@ def coords_rect_all(d_tanc, l_tanc, w_env, d_env, h_env):
     for k in range(layers_v):
         z = (k * h_env) + (h_env / 2.0)
         for (x, y) in centres_v:
-            xs.append(x)
-            ys.append(y)
-            zs.append(z)
-            typ.append("V")
+            xs.append(x); ys.append(y); zs.append(z); typ.append("V")
 
     h_restant = l_tanc - (layers_v * h_env)
 
@@ -403,24 +503,18 @@ def coords_rect_all(d_tanc, l_tanc, w_env, d_env, h_env):
         for capa in range(capes_a):
             z = z_base + (capa * w_env) + (w_env / 2.0)
             for (x, y) in centres_a:
-                xs.append(x)
-                ys.append(y)
-                zs.append(z)
-                typ.append("A")
+                xs.append(x); ys.append(y); zs.append(z); typ.append("A")
     elif total_b > 0:
         for capa in range(capes_b):
             z = z_base + (capa * d_env) + (d_env / 2.0)
             for (x, y) in centres_b:
-                xs.append(x)
-                ys.append(y)
-                zs.append(z)
-                typ.append("B")
+                xs.append(x); ys.append(y); zs.append(z); typ.append("B")
 
     return pd.DataFrame({"x": xs, "y": ys, "z": zs, "type": typ})
 
 
 # ==========================================================
-#     Mesh builders: cilindres i prismes COMBINATS
+#     Mesh builders + wireframe
 # ==========================================================
 def add_box_mesh(vertices, faces, center, sx, sy, sz):
     cx, cy, cz = center
@@ -440,18 +534,12 @@ def add_box_mesh(vertices, faces, center, sx, sy, sz):
     vertices.extend(v)
 
     f = [
-        (0, 1, 2),
-        (0, 2, 3),
-        (4, 6, 5),
-        (4, 7, 6),
-        (0, 5, 1),
-        (0, 4, 5),
-        (3, 2, 6),
-        (3, 6, 7),
-        (0, 3, 7),
-        (0, 7, 4),
-        (1, 5, 6),
-        (1, 6, 2),
+        (0, 1, 2), (0, 2, 3),
+        (4, 6, 5), (4, 7, 6),
+        (0, 5, 1), (0, 4, 5),
+        (3, 2, 6), (3, 6, 7),
+        (0, 3, 7), (0, 7, 4),
+        (1, 5, 6), (1, 6, 2),
     ]
     faces.extend([(base + a, base + b, base + c) for (a, b, c) in f])
 
@@ -515,9 +603,7 @@ def mesh_from_boxes(centers_xyz, sx, sy, sz):
     faces = []
     for (x, y, z) in centers_xyz:
         add_box_mesh(vertices, faces, (x, y, z), sx, sy, sz)
-    v = np.array(vertices, dtype=float)
-    f = np.array(faces, dtype=int)
-    return v, f
+    return np.array(vertices, dtype=float), np.array(faces, dtype=int)
 
 
 def mesh_from_cylinders(centers_xyz, radius, length, axis, nseg, caps=True):
@@ -525,9 +611,7 @@ def mesh_from_cylinders(centers_xyz, radius, length, axis, nseg, caps=True):
     faces = []
     for (x, y, z) in centers_xyz:
         add_cylinder_mesh(vertices, faces, (x, y, z), radius, length, axis=axis, nseg=nseg, caps=caps)
-    v = np.array(vertices, dtype=float)
-    f = np.array(faces, dtype=int)
-    return v, f
+    return np.array(vertices, dtype=float), np.array(faces, dtype=int)
 
 
 def tank_surface(d_tanc, l_tanc):
@@ -549,16 +633,13 @@ def add_mesh_trace(fig, v, f, name, opacity=1.0):
         opacity=opacity,
         name=name,
         hoverinfo="skip",
-        flatshading=False,
-        lighting=dict(ambient=0.25, diffuse=0.8, specular=0.45, roughness=0.5, fresnel=0.1),
-        lightposition=dict(x=2000, y=2000, z=2000)
+        flatshading=True,
+        lighting=dict(ambient=0.30, diffuse=0.85, specular=0.55, roughness=0.35, fresnel=0.15),
+        lightposition=dict(x=2500, y=2500, z=2500),
     ))
 
 
-# ==========================================================
-# Wireframe helpers (per distingir envasos)
-# ==========================================================
-def add_wireframe_trace(fig, x, y, z, name="Wireframe", width=2, opacity=0.9):
+def add_wireframe_trace(fig, x, y, z, name="Contorns", width=3, opacity=0.98):
     fig.add_trace(go.Scatter3d(
         x=x, y=y, z=z,
         mode="lines",
@@ -569,7 +650,7 @@ def add_wireframe_trace(fig, x, y, z, name="Wireframe", width=2, opacity=0.9):
     ))
 
 
-def cylinder_wireframe_points(center, radius, length, axis="Z", nseg=24, n_long=6):
+def cylinder_wireframe_points(center, radius, length, axis="Z", nseg=34, n_long=8):
     cx, cy, cz = center
     r = radius
     h = length
@@ -581,41 +662,29 @@ def cylinder_wireframe_points(center, radius, length, axis="Z", nseg=24, n_long=
     xs, ys, zs = [], [], []
 
     def add_polyline(px, py, pz):
-        xs.extend(px)
-        ys.extend(py)
-        zs.extend(pz)
-        xs.append(None)
-        ys.append(None)
-        zs.append(None)
+        xs.extend(px); ys.extend(py); zs.extend(pz)
+        xs.append(None); ys.append(None); zs.append(None)
 
     if axis == "Z":
         z0 = cz - h / 2.0
         z1 = cz + h / 2.0
-
         add_polyline(list(cx + r * ca), list(cy + r * sa), [z0] * len(ang))
         add_polyline(list(cx + r * ca), list(cy + r * sa), [z1] * len(ang))
-
         for k in range(n_long):
             a = 2 * math.pi * k / n_long
             x = cx + r * math.cos(a)
             y = cy + r * math.sin(a)
             add_polyline([x, x], [y, y], [z0, z1])
-
-    elif axis == "X":
+    else:
         x0 = cx - h / 2.0
         x1 = cx + h / 2.0
-
         add_polyline([x0] * len(ang), list(cy + r * ca), list(cz + r * sa))
         add_polyline([x1] * len(ang), list(cy + r * ca), list(cz + r * sa))
-
         for k in range(n_long):
             a = 2 * math.pi * k / n_long
             y = cy + r * math.cos(a)
             z = cz + r * math.sin(a)
             add_polyline([x0, x1], [y, y], [z, z])
-
-    else:
-        raise ValueError("axis must be 'Z' or 'X'")
 
     return xs, ys, zs
 
@@ -650,127 +719,358 @@ def boxes_wireframe_points(centers_xyz, sx, sy, sz):
     return xs, ys, zs
 
 
+def add_units_label(fig, units_text: str, l_tanc: float):
+    z_pos = -0.10 * float(l_tanc)
+    fig.add_trace(go.Scatter3d(
+        x=[0], y=[0], z=[z_pos],
+        mode="text",
+        text=[units_text],
+        textposition="middle center",
+        hoverinfo="skip",
+        showlegend=False
+    ))
+
+
+def render_3d_cyl(fig_title, d_tanc, l_tanc, d_amp, h_amp, units_in_container: int):
+    df = coords_cyl_all(d_tanc, l_tanc, d_amp, h_amp)
+    v_centers = df[df["type"] == "V"][["x", "y", "z"]].to_numpy()
+    h_centers = df[df["type"] == "H"][["x", "y", "z"]].to_numpy()
+
+    fig = go.Figure()
+    X, Y, Z = tank_surface(d_tanc, l_tanc)
+    fig.add_trace(go.Surface(x=X, y=Y, z=Z, opacity=0.07, showscale=False, hoverinfo="skip", name="Tanc"))
+
+    r = (d_amp / 2.0) * SHRINK_FACTOR
+    h_vis = h_amp * SHRINK_FACTOR
+
+    if len(v_centers) > 0:
+        vmesh, vfaces = mesh_from_cylinders(v_centers, radius=r, length=h_vis, axis="Z",
+                                            nseg=CYL_SEGMENTS, caps=CAPS)
+        add_mesh_trace(fig, vmesh, vfaces, "Vertical", opacity=1.0)
+
+        if SHOW_WIREFRAME:
+            xw, yw, zw = [], [], []
+            for (x, y, z) in v_centers:
+                xs, ys, zs = cylinder_wireframe_points((x, y, z), r, h_vis, axis="Z",
+                                                       nseg=WIRE_NSEG, n_long=8)
+                xw += xs; yw += ys; zw += zs
+            add_wireframe_trace(fig, xw, yw, zw, name="Contorns Vertical", width=WIRE_WIDTH)
+
+    if len(h_centers) > 0:
+        hmesh, hfaces = mesh_from_cylinders(h_centers, radius=r, length=h_vis, axis="X",
+                                            nseg=CYL_SEGMENTS, caps=CAPS)
+        add_mesh_trace(fig, hmesh, hfaces, "Tombada", opacity=1.0)
+
+        if SHOW_WIREFRAME:
+            xw, yw, zw = [], [], []
+            for (x, y, z) in h_centers:
+                xs, ys, zs = cylinder_wireframe_points((x, y, z), r, h_vis, axis="X",
+                                                       nseg=WIRE_NSEG, n_long=8)
+                xw += xs; yw += ys; zw += zs
+            add_wireframe_trace(fig, xw, yw, zw, name="Contorns Tombada", width=WIRE_WIDTH)
+
+    add_units_label(fig, f"{int(units_in_container)} u dins del contenidor", l_tanc)
+
+    fig.update_layout(
+        title=fig_title,
+        scene=dict(xaxis_title="X (mm)", yaxis_title="Y (mm)", zaxis_title="Z (mm)", aspectmode="data"),
+        margin=dict(l=0, r=0, t=35, b=0),
+        showlegend=True,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_3d_rect(fig_title, d_tanc, l_tanc, w_env, d_env, h_env, units_in_container: int):
+    df = coords_rect_all(d_tanc, l_tanc, w_env, d_env, h_env)
+    v_centers = df[df["type"] == "V"][["x", "y", "z"]].to_numpy()
+    a_centers = df[df["type"] == "A"][["x", "y", "z"]].to_numpy()
+    b_centers = df[df["type"] == "B"][["x", "y", "z"]].to_numpy()
+
+    fig = go.Figure()
+    X, Y, Z = tank_surface(d_tanc, l_tanc)
+    fig.add_trace(go.Surface(x=X, y=Y, z=Z, opacity=0.07, showscale=False, hoverinfo="skip", name="Tanc"))
+
+    wv = w_env * SHRINK_FACTOR
+    dv = d_env * SHRINK_FACTOR
+    hv = h_env * SHRINK_FACTOR
+
+    if len(v_centers) > 0:
+        vmesh, vfaces = mesh_from_boxes(v_centers, sx=wv, sy=dv, sz=hv)
+        add_mesh_trace(fig, vmesh, vfaces, "Vertical", opacity=1.0)
+        if SHOW_WIREFRAME:
+            xw, yw, zw = boxes_wireframe_points(v_centers, wv, dv, hv)
+            add_wireframe_trace(fig, xw, yw, zw, name="Contorns Vertical", width=WIRE_WIDTH)
+
+    if len(a_centers) > 0:
+        amesh, afaces = mesh_from_boxes(a_centers, sx=hv, sy=dv, sz=wv)
+        add_mesh_trace(fig, amesh, afaces, "Tombada_A", opacity=1.0)
+        if SHOW_WIREFRAME:
+            xw, yw, zw = boxes_wireframe_points(a_centers, hv, dv, wv)
+            add_wireframe_trace(fig, xw, yw, zw, name="Contorns Tombada_A", width=WIRE_WIDTH)
+
+    if len(b_centers) > 0:
+        bmesh, bfaces = mesh_from_boxes(b_centers, sx=wv, sy=hv, sz=dv)
+        add_mesh_trace(fig, bmesh, bfaces, "Tombada_B", opacity=1.0)
+        if SHOW_WIREFRAME:
+            xw, yw, zw = boxes_wireframe_points(b_centers, wv, hv, dv)
+            add_wireframe_trace(fig, xw, yw, zw, name="Contorns Tombada_B", width=WIRE_WIDTH)
+
+    add_units_label(fig, f"{int(units_in_container)} u dins del contenidor", l_tanc)
+
+    fig.update_layout(
+        title=fig_title,
+        scene=dict(xaxis_title="X (mm)", yaxis_title="Y (mm)", zaxis_title="Z (mm)", aspectmode="data"),
+        margin=dict(l=0, r=0, t=35, b=0),
+        showlegend=True,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
 # ==========================================================
 # UI
 # ==========================================================
-st.title("HPP Load Planner — Matemàtica Fusion + 3D (prismes i cilindres)")
+st.title("HPP Load Planner — Matemàtica + 3D")
 
 with st.sidebar:
     st.header("Inputs")
     N = st.number_input("Unitats comanda (N)", min_value=1, value=2000, step=10)
-    d_tanc = st.number_input("Diàmetre del tanc (mm)", min_value=1.0, value=360.0, step=1.0)
-
+    d_tanc = st.number_input("Diàmetre del tanc (mm)", min_value=1.0, value=380.0, step=1.0)
     forma = st.selectbox("Forma producte", ["Cilíndric", "Rectangular"])
 
-    st.subheader("3D Quality / Performance")
-    cyl_segments = st.slider("Segments cilindre (més = més bonic, més lent)", 8, 24, 12, 1)
-    caps = st.checkbox("Tancar cilindres (caps)", value=True)
+    st.subheader("Objectiu d'optimització (ideal)")
+    objective = st.selectbox(
+        "Tria l'objectiu",
+        [
+            "Minimitzar cicles",
+            "Minimitzar cost total",
+            "Maximitzar unitats/cicle",
+            "Balanced (cicles → cost)"
+        ],
+        index=0
+    )
 
-    st.subheader("Visualització 3D")
-    show_wireframe = st.checkbox("Mostrar contorns (wireframe)", value=True)
-    wire_nseg = st.slider("Detall contorns (segments)", 12, 40, 24, 2)
-    wire_width = st.slider("Gruix contorn", 1, 6, 3, 1)
-    shrink = st.slider("Separació visual envasos (%)", 0, 6, 2, 1)
-    shrink_factor = 1.0 - (shrink / 100.0)
-
-    st.subheader("Costos (opcional)")
-    cost_per_cycle = st.number_input("Cost per cicle (€)", min_value=0.0, value=63.0, step=1.0)
-    containers_per_cycle = st.number_input("Contenidors per cicle", min_value=1, value=2, step=1)
+    st.subheader("Màquines (fixes)")
+    st.caption(f"HIPERBARIC 420 — {COST_420:.2f} €/cicle (inclou mà d'obra) | longitud útil {LEN_420_MM:.0f} mm")
+    st.caption(f"HIPERBARIC 525 — {COST_525:.2f} €/cicle (inclou mà d'obra) | longitud útil {LEN_525_MM:.0f} mm")
 
 col1, col2 = st.columns([1.2, 1.0])
 
+name_420 = "HIPERBARIC 420"
+name_525 = "HIPERBARIC 525"
+
+
+def show_best_line(machine_name, best_row, cap_p, cap_g, cost_per_cycle):
+    if best_row is None:
+        st.warning(f"{machine_name}: cap combinació possible.")
+        return None
+
+    k_p = int(best_row["k_petit"])
+    k_g = int(best_row["k_gran"])
+    u_last, cap_last, _ = units_last_container_last_cycle(int(N), k_p, k_g, cap_p, cap_g)
+
+    st.write(
+        f"**{machine_name}** → **{k_p}×{NAME_L1} + {k_g}×{NAME_L2}** | "
+        f"**{int(best_row['unitats/cicle'])} u/cicle** | "
+        f"cicles: **{int(best_row['cicles'])}** | "
+        f"cost total: **{float(best_row['cost_total']):.2f} €** | "
+        f"**últim contenidor (últim cicle): {u_last} u** (cap {cap_last})"
+    )
+    return best_row
+
+
+def combos_dropdown(machine_title, df_scored):
+    st.markdown(f"**{machine_title} — Combinacions possibles**")
+    if df_scored is None or df_scored.empty:
+        st.info("Sense combinacions.")
+        return
+
+    options = []
+    for _, r in df_scored.iterrows():
+        kp = int(r["k_petit"]); kg = int(r["k_gran"])
+        options.append(
+            f"{kg}×{NAME_L2} + {kp}×{NAME_L1}  —  "
+            f"{int(r['unitats/cicle'])} u/cicle | {int(r['cicles'])} cicles | {float(r['cost_total']):.2f} €"
+        )
+
+    idx = st.selectbox("Tria combinació", list(range(len(options))), format_func=lambda i: options[i], key=f"combo_{machine_title}")
+    row = df_scored.iloc[int(idx)].to_dict()
+    st.caption(f"Detall: k_petit={int(row['k_petit'])}, k_gran={int(row['k_gran'])} | contenidors/cicle={int(row['contenidors/cicle'])}")
+    st.write("")
+
+
+# ==========================================================
+# CILÍNDRIC
+# ==========================================================
 if forma == "Cilíndric":
     with col1:
         st.subheader("Paràmetres cilíndric")
         d_amp = st.number_input("Diàmetre ampolla (mm)", min_value=0.1, value=50.0, step=0.5)
         h_amp = st.number_input("Alçada ampolla (mm)", min_value=0.1, value=150.0, step=0.5)
 
-    cap1, perc1 = stats_cilindric(d_tanc, L1_MM, d_amp, h_amp)
-    cap2, perc2 = stats_cilindric(d_tanc, L2_MM, d_amp, h_amp)
-    dec = decideix_millor(int(N), cap1, perc1, cap2, perc2, "L1", "L2")
-
-    bestL = L1_MM if dec["best"] == "L1" else L2_MM
-    bestCap = cap1 if bestL == L1_MM else cap2
-    bestCont = dec["contenidors"][dec["best"]]
-    unitats_ultim = int(N - (bestCont - 1) * bestCap) if bestCont > 1 else int(N)
-
-    break_best = breakdown_cilindric(d_tanc, bestL, d_amp, h_amp)
+    cap_petit, perc_petit = stats_cilindric(d_tanc, L1_MM, d_amp, h_amp)
+    cap_gran, perc_gran = stats_cilindric(d_tanc, L2_MM, d_amp, h_amp)
 
     with col2:
-        st.subheader("Resultat")
-        st.write(f"**L1** ({int(L1_MM)} mm): cap **{cap1}** u | ocupat **{perc1:.2f}%** | contenidors **{dec['contenidors']['L1']}** | buit últim **{dec['buit']['L1']}** u")
-        st.write(f"**L2** ({int(L2_MM)} mm): cap **{cap2}** u | ocupat **{perc2:.2f}%** | contenidors **{dec['contenidors']['L2']}** | buit últim **{dec['buit']['L2']}** u")
-        st.success(f"✅ Millor opció: **{dec['best']}**  ({int(bestL)} mm)")
-        st.write(f"Unitats a l’últim contenidor: **{unitats_ultim}**")
+        st.subheader("Capacitats (contenidors)")
+        st.write(f"**{NAME_L1}** ({int(L1_MM)} mm): **{cap_petit} u** | ocupat **{perc_petit:.2f}%**")
+        st.write(f"**{NAME_L2}** ({int(L2_MM)} mm): **{cap_gran} u** | ocupat **{perc_gran:.2f}%**")
 
-        cycles = math.ceil(bestCont / containers_per_cycle)
-        st.write(f"Cicles (si {containers_per_cycle} contenidors/cicle): **{cycles}**  → Cost: **{cycles * cost_per_cycle:.2f} €**")
+        st.markdown("### Pla de producció (ideal)")
+        mix_420 = fixed_mix_per_cycle(name_420, LEN_420_MM, L1_MM, L2_MM, cap_petit, cap_gran)
+        mix_525 = fixed_mix_per_cycle(name_525, LEN_525_MM, L1_MM, L2_MM, cap_petit, cap_gran)
 
-        st.markdown("### Desglossament per capes (millor contenidor)")
-        st.write(f"Unitats per capa (vertical): **{break_best['per_layer_vertical']}**")
-        st.write(f"Capes verticals: **{break_best['layers_vertical']}** → Total vertical: **{break_best['total_vertical']}**")
-        st.write(f"Alçada restant: **{break_best['h_restant_mm']:.1f} mm**")
+        best_420, scored_420 = pick_best_mix(mix_420, int(N), COST_420, objective) if not mix_420.empty else (None, mix_420)
+        best_525, scored_525 = pick_best_mix(mix_525, int(N), COST_525, objective) if not mix_525.empty else (None, mix_525)
 
-        if break_best["layers_tombades"] > 0:
-            st.write(f"Unitats per capa (tombada): **{break_best['per_layer_tombada']}**")
-            st.write(f"Capes tombades: **{break_best['layers_tombades']}** → Total tombat: **{break_best['total_tombades']}**")
-        else:
-            st.write("Capes tombades: **0**")
+        _ = show_best_line(name_420, best_420, cap_petit, cap_gran, COST_420)
+        _ = show_best_line(name_525, best_525, cap_petit, cap_gran, COST_525)
 
-        st.write(f"**Total unitats dins el contenidor:** {break_best['total']}")
+        chosen_machine = name_420 if machine_key(best_420, objective) <= machine_key(best_525, objective) else name_525
+        st.success(f"🏭 Màquina recomanada: **{chosen_machine}**")
 
-        with st.expander("Veure taula capa per capa"):
-            st.dataframe(break_best["df_layers"], use_container_width=True)
+        st.markdown("---")
+        st.subheader("Conclusió (què fer a planta)")
+        best_winner = best_420 if chosen_machine == name_420 else best_525
+        cost_winner = COST_420 if chosen_machine == name_420 else COST_525
+
+        colC1, colC2 = st.columns([1.2, 0.8])
+        with colC1:
+            st.markdown(
+                plan_text(
+                    machine_name=chosen_machine,
+                    best_row=best_winner,
+                    N=int(N),
+                    cap_petit=int(cap_petit),
+                    cap_gran=int(cap_gran),
+                    objective=objective,
+                    name_L1=NAME_L1,
+                    name_L2=NAME_L2,
+                    cost_per_cycle=cost_winner,
+                )
+            )
+        with colC2:
+            st.info(
+                "✅ **Workflow**\n\n"
+                "1) Prepara els contenidors segons la combinació recomanada.\n"
+                "2) Repeteix els cicles fins completar la comanda.\n"
+                "3) A l’últim cicle, l’últim contenidor pot quedar parcial (unitats indicades)."
+            )
+
+        st.markdown("---")
+        st.subheader("Combinacions possibles")
+        combos_dropdown("HIPERBARIC 420", scored_420)
+        combos_dropdown("HIPERBARIC 525", scored_525)
+
+        # ==========================================================
+        # DECISIÓ OPTIM vs RÀPID (cost/cicle all-in)
+        # ==========================================================
+        st.markdown("---")
+        st.subheader("Decisió: OPTIM vs RÀPID (cost/cicle ja inclou mà d'obra)")
+
+        st.markdown(
+            "Com que el **cost/cicle és tot-inclòs**, el cost total depèn principalment dels **cicles**.\n\n"
+            "Els temps de càrrega els fem servir com a criteri de **workflow** (si la diferència de temps és gran, potser preferiu RÀPID)."
+        )
+
+        colD1, colD2 = st.columns(2)
+        with colD1:
+            t_load_optim = st.number_input("Temps carregar 1 contenidor (OPTIM) (min)", min_value=0.0, value=3.0, step=0.1, key="t_load_opt_simple_cyl")
+            t_load_rapid = st.number_input("Temps carregar 1 contenidor (RÀPID) (min)", min_value=0.0, value=2.0, step=0.1, key="t_load_rap_simple_cyl")
+        with colD2:
+            with st.expander("Avançat (per modelar RÀPID): densitat"):
+                st.markdown("**Dada clau**: quanta densitat perds fent RÀPID.")
+                factor_rapid = st.slider("Factor densitat RÀPID", min_value=0.50, max_value=1.00, value=0.85, step=0.01, key="factor_rapid_simple_cyl")
+
+        cap_p_rap = max(1, int(round(int(cap_petit) * float(factor_rapid))))
+        cap_g_rap = max(1, int(round(int(cap_gran) * float(factor_rapid))))
+
+        # millor opció per cost (només cicles)
+        mix_420_opt = fixed_mix_per_cycle(name_420, LEN_420_MM, L1_MM, L2_MM, int(cap_petit), int(cap_gran))
+        mix_525_opt = fixed_mix_per_cycle(name_525, LEN_525_MM, L1_MM, L2_MM, int(cap_petit), int(cap_gran))
+        mix_420_rap = fixed_mix_per_cycle(name_420, LEN_420_MM, L1_MM, L2_MM, int(cap_p_rap), int(cap_g_rap))
+        mix_525_rap = fixed_mix_per_cycle(name_525, LEN_525_MM, L1_MM, L2_MM, int(cap_p_rap), int(cap_g_rap))
+
+        best_420_opt, _ = best_total_cost_cycles_only(mix_420_opt, int(N), COST_420)
+        best_525_opt, _ = best_total_cost_cycles_only(mix_525_opt, int(N), COST_525)
+        best_420_rap, _ = best_total_cost_cycles_only(mix_420_rap, int(N), COST_420)
+        best_525_rap, _ = best_total_cost_cycles_only(mix_525_rap, int(N), COST_525)
+
+        candidates = []
+        if best_420_opt: candidates.append(("OPTIM", name_420, best_420_opt, COST_420, t_load_optim))
+        if best_525_opt: candidates.append(("OPTIM", name_525, best_525_opt, COST_525, t_load_optim))
+        if best_420_rap: candidates.append(("RÀPID", name_420, best_420_rap, COST_420, t_load_rapid))
+        if best_525_rap: candidates.append(("RÀPID", name_525, best_525_rap, COST_525, t_load_rapid))
+
+        rows = []
+        for mode, mach, br, cost_cycle, t_load in candidates:
+            k_p = int(br["k_petit"]); k_g = int(br["k_gran"])
+            cont_per_cycle = int(k_p + k_g)
+            cycles = int(br["cicles"])
+            cont_total = cycles * cont_per_cycle  # aprox (simple i entenedor)
+            time_total_min = float(cont_total) * float(t_load)
+            rows.append({
+                "Mode": mode,
+                "Màquina": mach,
+                "k_petit": k_p,
+                "k_gran": k_g,
+                "Cicles": cycles,
+                "Cost TOTAL (€)": float(br["cost_total"]),
+                "Temps càrrega total (min)": time_total_min,
+            })
+
+        df_dec = pd.DataFrame(rows).sort_values(by=["Cost TOTAL (€)", "Cicles", "Temps càrrega total (min)"], ascending=[True, True, True])
+        st.dataframe(df_dec, use_container_width=True)
+
+        best_row = df_dec.iloc[0].to_dict()
+        st.metric("Recomanació (mínim cost all-in)", f"{best_row['Mode']} — {best_row['Màquina']}")
+
+        # ==========================================================
+        # EXPORTAR
+        # ==========================================================
+        st.markdown("---")
+        st.subheader("Descarregar pla de producció")
+
+        payload = build_export_payload(
+            N=N, d_tanc=d_tanc, forma=forma, objective=objective,
+            cap_petit=cap_petit, cap_gran=cap_gran, perc_petit=perc_petit, perc_gran=perc_gran,
+            best_420=best_420, best_525=best_525,
+            chosen_machine=chosen_machine
+        )
+
+        plan_txt = build_plan_txt(
+            N=N, d_tanc=d_tanc, forma=forma, objective=objective,
+            cap_petit=cap_petit, cap_gran=cap_gran, perc_petit=perc_petit, perc_gran=perc_gran,
+            best_420=best_420, best_525=best_525,
+            chosen_machine=chosen_machine
+        )
+
+        cE1, cE2 = st.columns([1, 1])
+        with cE1:
+            st.download_button(
+                "⬇️ Descarregar pla de producció (TXT)",
+                data=plan_txt,
+                file_name="hpp_pla_produccio.txt",
+                mime="text/plain"
+            )
+        with cE2:
+            st.download_button(
+                "⬇️ Descarregar dades (JSON)",
+                data=json.dumps(payload, indent=2, ensure_ascii=False),
+                file_name="hpp_pla_produccio.json",
+                mime="application/json"
+            )
 
     st.markdown("---")
-    st.subheader("3D — Cilindres (totes les capes, verticals + tombades)")
+    st.subheader("3D — Comparació contenidor petit vs contenidor gran")
+    cA, cB = st.columns(2)
+    with cA:
+        render_3d_cyl(f"{NAME_L1} ({int(L1_MM)} mm)", d_tanc, L1_MM, d_amp, h_amp, units_in_container=int(cap_petit))
+    with cB:
+        render_3d_cyl(f"{NAME_L2} ({int(L2_MM)} mm)", d_tanc, L2_MM, d_amp, h_amp, units_in_container=int(cap_gran))
 
-    df = coords_cyl_all(d_tanc, bestL, d_amp, h_amp)
-
-    v_centers = df[df["type"] == "V"][["x", "y", "z"]].to_numpy()
-    h_centers = df[df["type"] == "H"][["x", "y", "z"]].to_numpy()
-
-    fig = go.Figure()
-
-    X, Y, Z = tank_surface(d_tanc, bestL)
-    fig.add_trace(go.Surface(x=X, y=Y, z=Z, opacity=0.08, showscale=False, hoverinfo="skip", name="Tank"))
-
-    r = (d_amp / 2.0) * shrink_factor
-    h_vis = h_amp * shrink_factor
-
-    if len(v_centers) > 0:
-        vmesh, vfaces = mesh_from_cylinders(v_centers, radius=r, length=h_vis, axis="Z", nseg=cyl_segments, caps=caps)
-        add_mesh_trace(fig, vmesh, vfaces, "Vertical", opacity=1.0)
-
-    if len(h_centers) > 0:
-        hmesh, hfaces = mesh_from_cylinders(h_centers, radius=r, length=h_vis, axis="X", nseg=cyl_segments, caps=caps)
-        add_mesh_trace(fig, hmesh, hfaces, "Horizontal", opacity=1.0)
-
-    if show_wireframe:
-        # Wireframe vertical
-        if len(v_centers) > 0:
-            xw, yw, zw = [], [], []
-            for (x, y, z) in v_centers:
-                xs, ys, zs = cylinder_wireframe_points((x, y, z), r, h_vis, axis="Z", nseg=wire_nseg, n_long=6)
-                xw += xs; yw += ys; zw += zs
-            add_wireframe_trace(fig, xw, yw, zw, name="Contorns Vertical", width=wire_width, opacity=0.95)
-
-        # Wireframe horizontal
-        if len(h_centers) > 0:
-            xw, yw, zw = [], [], []
-            for (x, y, z) in h_centers:
-                xs, ys, zs = cylinder_wireframe_points((x, y, z), r, h_vis, axis="X", nseg=wire_nseg, n_long=6)
-                xw += xs; yw += ys; zw += zs
-            add_wireframe_trace(fig, xw, yw, zw, name="Contorns Tombada", width=wire_width, opacity=0.95)
-
-    fig.update_layout(
-        scene=dict(xaxis_title="X (mm)", yaxis_title="Y (mm)", zaxis_title="Z (mm)", aspectmode="data"),
-        margin=dict(l=0, r=0, t=10, b=0),
-        showlegend=True,
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-
+# ==========================================================
+# RECTANGULAR
+# ==========================================================
 else:
     with col1:
         st.subheader("Paràmetres rectangular")
@@ -778,90 +1078,149 @@ else:
         d_env = st.number_input("Profunditat (Y) (mm)", min_value=0.1, value=60.0, step=0.5)
         h_env = st.number_input("Alçada (Z) (mm)", min_value=0.1, value=150.0, step=0.5)
 
-    cap1, perc1 = stats_rectangular(d_tanc, L1_MM, w_env, d_env, h_env)
-    cap2, perc2 = stats_rectangular(d_tanc, L2_MM, w_env, d_env, h_env)
-    dec = decideix_millor(int(N), cap1, perc1, cap2, perc2, "L1", "L2")
-
-    bestL = L1_MM if dec["best"] == "L1" else L2_MM
-    bestCont = dec["contenidors"][dec["best"]]
-    bestCap = cap1 if bestL == L1_MM else cap2
-    unitats_ultim = int(N - (bestCont - 1) * bestCap) if bestCont > 1 else int(N)
-
-    break_best = breakdown_rectangular(d_tanc, bestL, w_env, d_env, h_env)
+    cap_petit, perc_petit = stats_rectangular(d_tanc, L1_MM, w_env, d_env, h_env)
+    cap_gran, perc_gran = stats_rectangular(d_tanc, L2_MM, w_env, d_env, h_env)
 
     with col2:
-        st.subheader("Resultat")
-        st.write(f"**L1** ({int(L1_MM)} mm): cap **{cap1}** u | ocupat **{perc1:.2f}%** | contenidors **{dec['contenidors']['L1']}** | buit últim **{dec['buit']['L1']}** u")
-        st.write(f"**L2** ({int(L2_MM)} mm): cap **{cap2}** u | ocupat **{perc2:.2f}%** | contenidors **{dec['contenidors']['L2']}** | buit últim **{dec['buit']['L2']}** u")
-        st.success(f"✅ Millor opció: **{dec['best']}**  ({int(bestL)} mm)")
-        st.write(f"Unitats a l’últim contenidor: **{unitats_ultim}**")
+        st.subheader("Capacitats (contenidors)")
+        st.write(f"**{NAME_L1}** ({int(L1_MM)} mm): **{cap_petit} u** | ocupat **{perc_petit:.2f}%**")
+        st.write(f"**{NAME_L2}** ({int(L2_MM)} mm): **{cap_gran} u** | ocupat **{perc_gran:.2f}%**")
 
-        cycles = math.ceil(bestCont / containers_per_cycle)
-        st.write(f"Cicles (si {containers_per_cycle} contenidors/cicle): **{cycles}**  → Cost: **{cycles * cost_per_cycle:.2f} €**")
+        st.markdown("### Pla de producció (ideal)")
+        mix_420 = fixed_mix_per_cycle(name_420, LEN_420_MM, L1_MM, L2_MM, cap_petit, cap_gran)
+        mix_525 = fixed_mix_per_cycle(name_525, LEN_525_MM, L1_MM, L2_MM, cap_petit, cap_gran)
 
-        st.markdown("### Desglossament per capes (millor contenidor)")
-        st.write(f"Unitats per capa (vertical): **{break_best['per_layer_vertical']}**")
-        st.write(f"Capes verticals: **{break_best['layers_vertical']}** → Total vertical: **{break_best['total_vertical']}**")
-        st.write(f"Alçada restant: **{break_best['h_restant_mm']:.1f} mm**")
+        best_420, scored_420 = pick_best_mix(mix_420, int(N), COST_420, objective) if not mix_420.empty else (None, mix_420)
+        best_525, scored_525 = pick_best_mix(mix_525, int(N), COST_525, objective) if not mix_525.empty else (None, mix_525)
 
-        if break_best["layers_tombades"] > 0:
-            st.write(f"Mode tombat triat: **{break_best['tombada_mode']}**")
-            st.write(f"Unitats per capa (tombada): **{break_best['per_layer_tombada']}**")
-            st.write(f"Capes tombades: **{break_best['layers_tombades']}** → Total tombat: **{break_best['total_tombades']}**")
-        else:
-            st.write("Capes tombades: **0**")
+        _ = show_best_line(name_420, best_420, cap_petit, cap_gran, COST_420)
+        _ = show_best_line(name_525, best_525, cap_petit, cap_gran, COST_525)
 
-        st.write(f"**Total unitats dins el contenidor:** {break_best['total']}")
+        chosen_machine = name_420 if machine_key(best_420, objective) <= machine_key(best_525, objective) else name_525
+        st.success(f"🏭 Màquina recomanada: **{chosen_machine}**")
 
-        with st.expander("Veure taula capa per capa"):
-            st.dataframe(break_best["df_layers"], use_container_width=True)
+        st.markdown("---")
+        st.subheader("Conclusió (què fer a planta)")
+        best_winner = best_420 if chosen_machine == name_420 else best_525
+        cost_winner = COST_420 if chosen_machine == name_420 else COST_525
+
+        colC1, colC2 = st.columns([1.2, 0.8])
+        with colC1:
+            st.markdown(
+                plan_text(
+                    machine_name=chosen_machine,
+                    best_row=best_winner,
+                    N=int(N),
+                    cap_petit=int(cap_petit),
+                    cap_gran=int(cap_gran),
+                    objective=objective,
+                    name_L1=NAME_L1,
+                    name_L2=NAME_L2,
+                    cost_per_cycle=cost_winner,
+                )
+            )
+        with colC2:
+            st.info(
+                "✅ **Workflow**\n\n"
+                "1) Prepara els contenidors segons la combinació recomanada.\n"
+                "2) Repeteix els cicles fins completar la comanda.\n"
+                "3) A l’últim cicle, l’últim contenidor pot quedar parcial (unitats indicades)."
+            )
+
+        st.markdown("---")
+        st.subheader("Combinacions possibles")
+        combos_dropdown("HIPERBARIC 420", scored_420)
+        combos_dropdown("HIPERBARIC 525", scored_525)
+
+        st.markdown("---")
+        st.subheader("Decisió: OPTIM vs RÀPID (cost/cicle ja inclou mà d'obra)")
+
+        colD1, colD2 = st.columns(2)
+        with colD1:
+            t_load_optim = st.number_input("Temps carregar 1 contenidor (OPTIM) (min)", min_value=0.0, value=3.0, step=0.1, key="t_load_opt_simple_rect")
+            t_load_rapid = st.number_input("Temps carregar 1 contenidor (RÀPID) (min)", min_value=0.0, value=2.0, step=0.1, key="t_load_rap_simple_rect")
+        with colD2:
+            with st.expander("Avançat (per modelar RÀPID): densitat"):
+                factor_rapid = st.slider("Factor densitat RÀPID", min_value=0.50, max_value=1.00, value=0.85, step=0.01, key="factor_rapid_simple_rect")
+
+        cap_p_rap = max(1, int(round(int(cap_petit) * float(factor_rapid))))
+        cap_g_rap = max(1, int(round(int(cap_gran) * float(factor_rapid))))
+
+        mix_420_opt = fixed_mix_per_cycle(name_420, LEN_420_MM, L1_MM, L2_MM, int(cap_petit), int(cap_gran))
+        mix_525_opt = fixed_mix_per_cycle(name_525, LEN_525_MM, L1_MM, L2_MM, int(cap_petit), int(cap_gran))
+        mix_420_rap = fixed_mix_per_cycle(name_420, LEN_420_MM, L1_MM, L2_MM, int(cap_p_rap), int(cap_g_rap))
+        mix_525_rap = fixed_mix_per_cycle(name_525, LEN_525_MM, L1_MM, L2_MM, int(cap_p_rap), int(cap_g_rap))
+
+        best_420_opt, _ = best_total_cost_cycles_only(mix_420_opt, int(N), COST_420)
+        best_525_opt, _ = best_total_cost_cycles_only(mix_525_opt, int(N), COST_525)
+        best_420_rap, _ = best_total_cost_cycles_only(mix_420_rap, int(N), COST_420)
+        best_525_rap, _ = best_total_cost_cycles_only(mix_525_rap, int(N), COST_525)
+
+        candidates = []
+        if best_420_opt: candidates.append(("OPTIM", name_420, best_420_opt, COST_420, t_load_optim))
+        if best_525_opt: candidates.append(("OPTIM", name_525, best_525_opt, COST_525, t_load_optim))
+        if best_420_rap: candidates.append(("RÀPID", name_420, best_420_rap, COST_420, t_load_rapid))
+        if best_525_rap: candidates.append(("RÀPID", name_525, best_525_rap, COST_525, t_load_rapid))
+
+        rows = []
+        for mode, mach, br, cost_cycle, t_load in candidates:
+            k_p = int(br["k_petit"]); k_g = int(br["k_gran"])
+            cont_per_cycle = int(k_p + k_g)
+            cycles = int(br["cicles"])
+            cont_total = cycles * cont_per_cycle
+            time_total_min = float(cont_total) * float(t_load)
+            rows.append({
+                "Mode": mode,
+                "Màquina": mach,
+                "k_petit": k_p,
+                "k_gran": k_g,
+                "Cicles": cycles,
+                "Cost TOTAL (€)": float(br["cost_total"]),
+                "Temps càrrega total (min)": time_total_min,
+            })
+
+        df_dec = pd.DataFrame(rows).sort_values(by=["Cost TOTAL (€)", "Cicles", "Temps càrrega total (min)"], ascending=[True, True, True])
+        st.dataframe(df_dec, use_container_width=True)
+        best_row = df_dec.iloc[0].to_dict()
+        st.metric("Recomanació (mínim cost all-in)", f"{best_row['Mode']} — {best_row['Màquina']}")
+
+        st.markdown("---")
+        st.subheader("Descarregar pla de producció")
+
+        payload = build_export_payload(
+            N=N, d_tanc=d_tanc, forma=forma, objective=objective,
+            cap_petit=cap_petit, cap_gran=cap_gran, perc_petit=perc_petit, perc_gran=perc_gran,
+            best_420=best_420, best_525=best_525,
+            chosen_machine=chosen_machine
+        )
+
+        plan_txt = build_plan_txt(
+            N=N, d_tanc=d_tanc, forma=forma, objective=objective,
+            cap_petit=cap_petit, cap_gran=cap_gran, perc_petit=perc_petit, perc_gran=perc_gran,
+            best_420=best_420, best_525=best_525,
+            chosen_machine=chosen_machine
+        )
+
+        cE1, cE2 = st.columns([1, 1])
+        with cE1:
+            st.download_button(
+                "⬇️ Descarregar pla de producció (TXT)",
+                data=plan_txt,
+                file_name="hpp_pla_produccio.txt",
+                mime="text/plain"
+            )
+        with cE2:
+            st.download_button(
+                "⬇️ Descarregar dades (JSON)",
+                data=json.dumps(payload, indent=2, ensure_ascii=False),
+                file_name="hpp_pla_produccio.json",
+                mime="application/json"
+            )
 
     st.markdown("---")
-    st.subheader("3D — Prismes (totes les capes, verticals + tombats A/B)")
-
-    df = coords_rect_all(d_tanc, bestL, w_env, d_env, h_env)
-
-    v_centers = df[df["type"] == "V"][["x", "y", "z"]].to_numpy()
-    a_centers = df[df["type"] == "A"][["x", "y", "z"]].to_numpy()
-    b_centers = df[df["type"] == "B"][["x", "y", "z"]].to_numpy()
-
-    fig = go.Figure()
-    X, Y, Z = tank_surface(d_tanc, bestL)
-    fig.add_trace(go.Surface(x=X, y=Y, z=Z, opacity=0.08, showscale=False, hoverinfo="skip", name="Tank"))
-
-    # shrinked sizes for visibility
-    wv = w_env * shrink_factor
-    dv = d_env * shrink_factor
-    hv = h_env * shrink_factor
-
-    if len(v_centers) > 0:
-        vmesh, vfaces = mesh_from_boxes(v_centers, sx=wv, sy=dv, sz=hv)
-        add_mesh_trace(fig, vmesh, vfaces, "Vertical", opacity=1.0)
-
-    if len(a_centers) > 0:
-        amesh, afaces = mesh_from_boxes(a_centers, sx=hv, sy=dv, sz=wv)
-        add_mesh_trace(fig, amesh, afaces, "Horizontal_A", opacity=1.0)
-
-    if len(b_centers) > 0:
-        bmesh, bfaces = mesh_from_boxes(b_centers, sx=wv, sy=hv, sz=dv)
-        add_mesh_trace(fig, bmesh, bfaces, "Horizontal_B", opacity=1.0)
-
-    if show_wireframe:
-        if len(v_centers) > 0:
-            xw, yw, zw = boxes_wireframe_points(v_centers, wv, dv, hv)
-            add_wireframe_trace(fig, xw, yw, zw, name="Contorns Vertical", width=wire_width, opacity=0.95)
-
-        if len(a_centers) > 0:
-            xw, yw, zw = boxes_wireframe_points(a_centers, hv, dv, wv)
-            add_wireframe_trace(fig, xw, yw, zw, name="Contorns Tombada_A", width=wire_width, opacity=0.95)
-
-        if len(b_centers) > 0:
-            xw, yw, zw = boxes_wireframe_points(b_centers, wv, hv, dv)
-            add_wireframe_trace(fig, xw, yw, zw, name="Contorns Tombada_B", width=wire_width, opacity=0.95)
-
-    fig.update_layout(
-        scene=dict(xaxis_title="X (mm)", yaxis_title="Y (mm)", zaxis_title="Z (mm)", aspectmode="data"),
-        margin=dict(l=0, r=0, t=10, b=0),
-        showlegend=True,
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    st.subheader("3D — Comparació contenidor petit vs contenidor gran")
+    cA, cB = st.columns(2)
+    with cA:
+        render_3d_rect(f"{NAME_L1} ({int(L1_MM)} mm)", d_tanc, L1_MM, w_env, d_env, h_env, units_in_container=int(cap_petit))
+    with cB:
+        render_3d_rect(f"{NAME_L2} ({int(L2_MM)} mm)", d_tanc, L2_MM, w_env, d_env, h_env, units_in_container=int(cap_gran))
