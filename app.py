@@ -401,6 +401,9 @@ def evaluate_machine(
             labor_cycle = (minutes_total_cycle / 60.0) * float(labor_cost_per_hour)
             cost_cycle_real = float(nonlab_cost_cycle) + float(labor_cycle)
             cost_total = float(cycles) * cost_cycle_real
+            cost_per_unit = cost_total / float(N) if float(N) > 0 else 0.0
+            total_order_time_min = float(cycles) * float(minutes_total_cycle)
+            total_order_time_h = total_order_time_min / 60.0
 
             u_last, cap_last, _ = units_last_container_last_cycle(int(N), kp, kg, cap_p, cap_g)
 
@@ -417,6 +420,9 @@ def evaluate_machine(
                 "labor_eur_per_cycle": labor_cycle,
                 "real_eur_per_cycle": cost_cycle_real,
                 "total_cost": cost_total,
+                "cost_per_unit": cost_per_unit,
+                "total_order_time_min": total_order_time_min,
+                "total_order_time_h": total_order_time_h,
                 "cap_p_used": cap_p,
                 "cap_g_used": cap_g,
                 "last_container_units": u_last,
@@ -868,6 +874,9 @@ df_show = df_all.rename(columns={
     "labor_eur_per_cycle": "MOD_real_€/cicle",
     "real_eur_per_cycle": "cost_real_€/cicle",
     "total_cost": "cost_total",
+    "cost_per_unit": "cost_per_unit",
+    "total_order_time_min": "temps_total_comanda_min",
+    "total_order_time_h": "temps_total_comanda_h",
     "last_container_units": "ultim_contenidor_ultim_cicle_u",
     "last_container_cap": "ultim_contenidor_cap",
 })
@@ -879,7 +888,8 @@ st.dataframe(
             "k_gran", "k_petit",
             "unitats/cicle", "cicles",
             "min_total/cicle", "MOD_real_€/cicle", "cost_real_€/cicle",
-            "cost_total",
+            "cost_total", "cost_per_unit",
+            "temps_total_comanda_h", "temps_total_comanda_min",
             "ultim_contenidor_ultim_cicle_u", "ultim_contenidor_cap",
         ]
     ],
@@ -893,7 +903,80 @@ st.divider()
 st.header("✅ Pla de producció FINAL (òptim)")
 
 winner = df_all.iloc[0].to_dict()
+second_best = df_all.iloc[1].to_dict() if len(df_all) > 1 else winner
+
+best_cost = float(winner['total_cost'])
+second_best_cost = float(second_best['total_cost'])
+savings_eur = max(0.0, second_best_cost - best_cost)
+savings_pct = (savings_eur / second_best_cost * 100.0) if second_best_cost > 0 else 0.0
+
 st.success(f"Recomanació: **{winner['mode']}** a **{winner['machine']}**")
+
+st.subheader("📊 Quadre executiu")
+st.markdown(
+    """
+    <style>
+    .kpi-card {
+        border: 1px solid rgba(49, 51, 63, 0.2);
+        border-radius: 0.6rem;
+        padding: 0.65rem 0.75rem;
+        background: rgba(250, 250, 250, 0.6);
+        min-height: 84px;
+    }
+    .kpi-label {
+        font-size: 0.78rem;
+        color: #6b7280;
+        margin-bottom: 0.2rem;
+        line-height: 1.2;
+    }
+    .kpi-value {
+        font-size: 1.02rem;
+        font-weight: 600;
+        line-height: 1.25;
+        word-break: break-word;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+kpi1, kpi2, kpi3, kpi4, kpi5, kpi6, kpi7 = st.columns([2.0, 1.0, 1.1, 0.9, 1.2, 1.1, 1.4])
+with kpi1:
+    st.markdown(
+        f"""<div class="kpi-card"><div class="kpi-label">Màquina recomanada</div><div class="kpi-value">{str(winner['machine'])}</div></div>""",
+        unsafe_allow_html=True,
+    )
+with kpi2:
+    st.markdown(
+        f"""<div class="kpi-card"><div class="kpi-label">Mode recomanat</div><div class="kpi-value">{str(winner['mode'])}</div></div>""",
+        unsafe_allow_html=True,
+    )
+with kpi3:
+    st.markdown(
+        f"""<div class="kpi-card"><div class="kpi-label">Cost total</div><div class="kpi-value">{float(winner['total_cost']):.2f} €</div></div>""",
+        unsafe_allow_html=True,
+    )
+with kpi4:
+    st.markdown(
+        f"""<div class="kpi-card"><div class="kpi-label">Cicles totals</div><div class="kpi-value">{int(winner['cycles'])}</div></div>""",
+        unsafe_allow_html=True,
+    )
+with kpi5:
+    st.markdown(
+        f"""<div class="kpi-card"><div class="kpi-label">Cost per unitat</div><div class="kpi-value">{float(winner['cost_per_unit']):.4f} € / unitat</div></div>""",
+        unsafe_allow_html=True,
+    )
+with kpi6:
+    st.markdown(
+        f"""<div class="kpi-card"><div class="kpi-label">Temps total comanda</div><div class="kpi-value">{float(winner['total_order_time_h']):.2f} h</div></div>""",
+        unsafe_allow_html=True,
+    )
+
+with kpi7:
+    st.markdown(
+        f"""<div class="kpi-card"><div class="kpi-label">Estalvi vs alternativa</div><div class="kpi-value">{savings_eur:.2f} € ({savings_pct:.1f}%)</div></div>""",
+        unsafe_allow_html=True,
+    )
 
 st.markdown(
     f"""
@@ -908,8 +991,14 @@ st.markdown(
 - **MOD real €/cicle:** {float(winner['labor_eur_per_cycle']):.2f} €  
 - **Cost real €/cicle:** {float(winner['real_eur_per_cycle']):.2f} €  
 - **Cost total:** **{float(winner['total_cost']):.2f} €**  
+- **Cost per unitat:** **{float(winner['cost_per_unit']):.4f} € / unitat**  
+- **Temps total comanda:** **{float(winner['total_order_time_h']):.2f} h** ({float(winner['total_order_time_min']):.2f} min)  
 - **Últim contenidor (últim cicle):** {int(winner['last_container_units'])} u (cap {int(winner['last_container_cap'])})
 """
+)
+
+st.info(
+    f"La configuració recomanada redueix el cost en {savings_eur:.2f} € ({savings_pct:.1f}%) respecte la segona millor opció."
 )
 
 # 3D només si guanya ORDENAT
@@ -956,6 +1045,8 @@ payload = {
     },
     "comparacio": df_show.to_dict(orient="records"),
     "pla_final": winner,
+    "total_order_time_min": float(winner["total_order_time_min"]),
+    "total_order_time_h": float(winner["total_order_time_h"]),
 }
 
 plan_txt = []
@@ -986,6 +1077,8 @@ plan_txt.append(f"- Temps total/cicle (càrrega + procés): {float(winner['minut
 plan_txt.append(f"- MOD real €/cicle: {float(winner['labor_eur_per_cycle']):.2f}")
 plan_txt.append(f"- Cost real €/cicle: {float(winner['real_eur_per_cycle']):.2f}")
 plan_txt.append(f"- Cost total: {float(winner['total_cost']):.2f}")
+plan_txt.append(f"- Cost per unitat: {float(winner['cost_per_unit']):.4f} € / unitat")
+plan_txt.append(f"- Temps total comanda: {float(winner['total_order_time_h']):.2f} h ({float(winner['total_order_time_min']):.2f} min)")
 plan_txt.append(f"- Últim contenidor últim cicle: {int(winner['last_container_units'])} u (cap {int(winner['last_container_cap'])})")
 plan_txt = "\n".join(plan_txt)
 
