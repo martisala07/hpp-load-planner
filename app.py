@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-# HPP Load Planner — ORDENAT vs RANDOM (€/hora editable + temps procés min/cicle)
-# - Cost fix per cicle (SENSE MOD): NONLAB_420 / NONLAB_525 (fixos)
-# - MOD = €/hora * (minuts totals per cicle / 60)
-#   minuts totals = minuts càrrega (contenidors/cicle * min/contenidor) + minuts procés (min/cicle)
-# - RANDOM: més ràpid però menys densitat (factor densitat)
-# - ORDENAT: més lent però densitat ideal + animació 3D (si guanya)
+# HPP Load Planner — ORDENAT vs RANDOM
+# Millores implementades:
+# - Presets reals d'envasos/productes
+# - Família producte: Sòlid / Líquid
+# - 3D amb horitzontals a la part superior del contenidor
+# - Inputs més clars pel PM
 
 import math
 import json
@@ -41,7 +41,7 @@ LEN_420_MM = 3700.0
 LEN_525_MM = 4630.0
 
 # ==========================================================
-# 3D DEFAULTS (sense sliders)
+# 3D DEFAULTS
 # ==========================================================
 CYL_SEGMENTS = 18
 CAPS = True
@@ -49,6 +49,65 @@ SHOW_WIREFRAME = True
 WIRE_NSEG = 34
 WIRE_WIDTH = 4
 SHRINK_FACTOR = 0.985
+
+# ==========================================================
+# PRESETS PRODUCTE
+# ==========================================================
+PRODUCT_PRESETS = {
+    "Personalitzat": {
+        "family": "Sòlid",
+        "shape": "Cilíndric",
+        "d": 50.0,
+        "h": 150.0,
+        "w": 40.0,
+        "depth": 60.0,
+        "hz": 150.0,
+    },
+    "Xoriç (Ø80 x 1050)": {
+        "family": "Sòlid",
+        "shape": "Cilíndric",
+        "d": 80.0,
+        "h": 1050.0,
+        "w": 40.0,
+        "depth": 60.0,
+        "hz": 150.0,
+    },
+    "Llonganissa (Ø65 x 1050)": {
+        "family": "Sòlid",
+        "shape": "Cilíndric",
+        "d": 65.0,
+        "h": 1050.0,
+        "w": 40.0,
+        "depth": 60.0,
+        "hz": 150.0,
+    },
+    "Pernil simple (80 x 190 x 400)": {
+        "family": "Sòlid",
+        "shape": "Rectangular",
+        "d": 50.0,
+        "h": 150.0,
+        "w": 80.0,
+        "depth": 190.0,
+        "hz": 400.0,
+    },
+    "Pernil doble (80 x 190 x 800)": {
+        "family": "Sòlid",
+        "shape": "Rectangular",
+        "d": 50.0,
+        "h": 150.0,
+        "w": 80.0,
+        "depth": 190.0,
+        "hz": 800.0,
+    },
+}
+
+# ==========================================================
+# COMPATIBILITAT DE COMBINACIÓ (base preparada)
+# ==========================================================
+def families_are_compatible(families):
+    fams = [str(f).strip().lower() for f in families if str(f).strip()]
+    return len(set(fams)) <= 1
+
 
 # ==========================================================
 #              MATEMÀTICA CILÍNDRICA (packing)
@@ -168,26 +227,183 @@ def genera_rectangular_optimitzat(R_tanc, dim_x, dim_y):
 
 
 # ==========================================================
-#        STATS (capacitat i % volum)
+# LAYOUTS ÒPTIMS — horitzontals sempre al tram final
 # ==========================================================
-def stats_cilindric(d_tanc, l_tanc, d_amp, h_amp):
+def best_cyl_layout_accessible(d_tanc, l_tanc, d_amp, h_amp):
     R_tanc = d_tanc / 2.0
     r_amp = d_amp / 2.0
 
     centres_v = genera_hexagonal_optimitzat(R_tanc, r_amp)
-    per_layer = len(centres_v)
-    layers = math.floor(l_tanc / max(h_amp, 1e-9))
-    total_verticals = per_layer * layers
+    per_layer_v = len(centres_v)
 
-    h_restant = l_tanc - (layers * h_amp)
-    capes_tombades = int(math.floor(h_restant / max(d_amp, 1e-9)))
-    total_tombades = 0
-    if capes_tombades > 0:
-        centres_h = genera_horizontals(R_tanc, h_amp, d_amp)
-        total_tombades = capes_tombades * len(centres_h)
+    centres_h = genera_horizontals(R_tanc, h_amp, d_amp)
+    per_layer_h = len(centres_h)
 
-    total = int(total_verticals + total_tombades)
+    best = {
+        "total": 0,
+        "anchor_frac": None,
+        "n_h_layers": 0,
+        "h_start": None,
+        "h_end": None,
+        "v_left_layers": 0,
+        "v_right_layers": 0,
+        "centres_v": centres_v,
+        "centres_h": centres_h,
+    }
 
+    # Tot vertical
+    all_v_layers = int(math.floor(l_tanc / max(h_amp, 1e-9)))
+    all_v_total = all_v_layers * per_layer_v
+    if all_v_total > best["total"]:
+        best.update({
+            "total": int(all_v_total),
+            "anchor_frac": None,
+            "n_h_layers": 0,
+            "h_start": None,
+            "h_end": None,
+            "v_left_layers": int(all_v_layers),
+            "v_right_layers": 0,
+        })
+
+    # Amb banda horitzontal, sempre col·locada al final per mantenir el 3D "a dalt"
+    max_h_layers = int(math.floor(l_tanc / max(d_amp, 1e-9)))
+    for n_h in range(1, max_h_layers + 1):
+        band_len = n_h * d_amp
+        if band_len > l_tanc:
+            continue
+
+        v_left_layers = int(math.floor((l_tanc - band_len) / max(h_amp, 1e-9)))
+        h_start = l_tanc - band_len
+        h_end = l_tanc
+        v_right_layers = 0
+
+        total = v_left_layers * per_layer_v + n_h * per_layer_h
+
+        if total > best["total"]:
+            best.update({
+                "total": int(total),
+                "anchor_frac": None,
+                "n_h_layers": int(n_h),
+                "h_start": float(h_start),
+                "h_end": float(h_end),
+                "v_left_layers": int(v_left_layers),
+                "v_right_layers": int(v_right_layers),
+            })
+
+    return best
+
+
+def best_rect_layout_accessible(d_tanc, l_tanc, w_env, d_env, h_env):
+    R_tanc = d_tanc / 2.0
+
+    centres_v, _ = genera_rectangular_optimitzat(R_tanc, w_env, d_env)
+    per_layer_v = len(centres_v)
+
+    best = {
+        "total": 0,
+        "mode": "V",
+        "anchor_frac": None,
+        "n_h_layers": 0,
+        "h_start": None,
+        "h_end": None,
+        "v_left_layers": 0,
+        "v_right_layers": 0,
+        "centres_v": centres_v,
+        "centres_h": [],
+        "layer_thickness": 0.0,
+        "sx": w_env,
+        "sy": d_env,
+        "sz": h_env,
+    }
+
+    # Tot vertical
+    all_v_layers = int(math.floor(l_tanc / max(h_env, 1e-9)))
+    all_v_total = all_v_layers * per_layer_v
+    if all_v_total > best["total"]:
+        best.update({
+            "total": int(all_v_total),
+            "mode": "V",
+            "v_left_layers": int(all_v_layers),
+            "v_right_layers": 0,
+            "n_h_layers": 0,
+            "h_start": None,
+            "h_end": None,
+        })
+
+    # Opció A: tombat amb gruix w_env, al tram final
+    centres_a, _ = genera_rectangular_optimitzat(R_tanc, h_env, d_env)
+    per_layer_a = len(centres_a)
+    max_a_layers = int(math.floor(l_tanc / max(w_env, 1e-9)))
+
+    for n_h in range(1, max_a_layers + 1):
+        band_len = n_h * w_env
+        if band_len > l_tanc:
+            continue
+
+        v_left_layers = int(math.floor((l_tanc - band_len) / max(h_env, 1e-9)))
+        h_start = l_tanc - band_len
+        h_end = l_tanc
+        v_right_layers = 0
+
+        total = v_left_layers * per_layer_v + n_h * per_layer_a
+
+        if total > best["total"]:
+            best.update({
+                "total": int(total),
+                "mode": "A",
+                "anchor_frac": None,
+                "n_h_layers": int(n_h),
+                "h_start": float(h_start),
+                "h_end": float(h_end),
+                "v_left_layers": int(v_left_layers),
+                "v_right_layers": int(v_right_layers),
+                "centres_h": centres_a,
+                "layer_thickness": float(w_env),
+            })
+
+    # Opció B: tombat amb gruix d_env, al tram final
+    centres_b, _ = genera_rectangular_optimitzat(R_tanc, w_env, h_env)
+    per_layer_b = len(centres_b)
+    max_b_layers = int(math.floor(l_tanc / max(d_env, 1e-9)))
+
+    for n_h in range(1, max_b_layers + 1):
+        band_len = n_h * d_env
+        if band_len > l_tanc:
+            continue
+
+        v_left_layers = int(math.floor((l_tanc - band_len) / max(h_env, 1e-9)))
+        h_start = l_tanc - band_len
+        h_end = l_tanc
+        v_right_layers = 0
+
+        total = v_left_layers * per_layer_v + n_h * per_layer_b
+
+        if total > best["total"]:
+            best.update({
+                "total": int(total),
+                "mode": "B",
+                "anchor_frac": None,
+                "n_h_layers": int(n_h),
+                "h_start": float(h_start),
+                "h_end": float(h_end),
+                "v_left_layers": int(v_left_layers),
+                "v_right_layers": int(v_right_layers),
+                "centres_h": centres_b,
+                "layer_thickness": float(d_env),
+            })
+
+    return best
+
+
+# ==========================================================
+#        STATS (capacitat i % volum)
+# ==========================================================
+def stats_cilindric(d_tanc, l_tanc, d_amp, h_amp):
+    layout = best_cyl_layout_accessible(d_tanc, l_tanc, d_amp, h_amp)
+    total = int(layout["total"])
+
+    R_tanc = d_tanc / 2.0
+    r_amp = d_amp / 2.0
     v_tanc = math.pi * (R_tanc ** 2) * l_tanc
     v_ampolla = math.pi * (r_amp ** 2) * h_amp
     v_ocupat = v_ampolla * total
@@ -197,26 +413,10 @@ def stats_cilindric(d_tanc, l_tanc, d_amp, h_amp):
 
 
 def stats_rectangular(d_tanc, l_tanc, w_env, d_env, h_env):
+    layout = best_rect_layout_accessible(d_tanc, l_tanc, w_env, d_env, h_env)
+    total = int(layout["total"])
+
     R_tanc = d_tanc / 2.0
-
-    centres_v, _ = genera_rectangular_optimitzat(R_tanc, w_env, d_env)
-    per_layer = len(centres_v)
-    layers = math.floor(l_tanc / max(h_env, 1e-9))
-    total_verticals = per_layer * layers
-
-    h_restant = l_tanc - (layers * h_env)
-
-    capes_a = int(math.floor(h_restant / max(w_env, 1e-9)))
-    centres_a, _ = genera_rectangular_optimitzat(R_tanc, h_env, d_env) if capes_a > 0 else ([], 0.0)
-    total_a = capes_a * len(centres_a)
-
-    capes_b = int(math.floor(h_restant / max(d_env, 1e-9)))
-    centres_b, _ = genera_rectangular_optimitzat(R_tanc, w_env, h_env) if capes_b > 0 else ([], 0.0)
-    total_b = capes_b * len(centres_b)
-
-    total_tombades = total_a if total_a >= total_b else total_b
-    total = int(total_verticals + total_tombades)
-
     v_tanc = math.pi * (R_tanc ** 2) * l_tanc
     v_env = w_env * d_env * h_env
     v_ocupat = v_env * total
@@ -229,66 +429,57 @@ def stats_rectangular(d_tanc, l_tanc, w_env, d_env, h_env):
 #   COORDS 3D (centres)
 # ==========================================================
 def coords_cyl_all(d_tanc, l_tanc, d_amp, h_amp):
-    R_tanc = d_tanc / 2.0
-    r_amp = d_amp / 2.0
-
-    centres_v = genera_hexagonal_optimitzat(R_tanc, r_amp)
-    layers_v = math.floor(l_tanc / max(h_amp, 1e-9))
+    layout = best_cyl_layout_accessible(d_tanc, l_tanc, d_amp, h_amp)
+    centres_v = layout["centres_v"]
+    centres_h = layout["centres_h"]
 
     xs, ys, zs, typ = [], [], [], []
 
-    for k in range(layers_v):
+    for k in range(layout["v_left_layers"]):
         z = (k * h_amp) + (h_amp / 2.0)
         for (x, y) in centres_v:
             xs.append(x); ys.append(y); zs.append(z); typ.append("V")
 
-    h_restant = l_tanc - (layers_v * h_amp)
-    capes_tombades = int(math.floor(h_restant / max(d_amp, 1e-9)))
-    if capes_tombades > 0:
-        centres_h = genera_horizontals(R_tanc, h_amp, d_amp)
-        for capa in range(capes_tombades):
-            z = (layers_v * h_amp) + r_amp + (capa * d_amp)
+    if layout["n_h_layers"] > 0 and layout["h_start"] is not None:
+        for j in range(layout["n_h_layers"]):
+            z = layout["h_start"] + (d_amp / 2.0) + (j * d_amp)
             for (x, y) in centres_h:
                 xs.append(x); ys.append(y); zs.append(z); typ.append("H")
+
+    if layout["n_h_layers"] > 0 and layout["h_end"] is not None:
+        base_right = layout["h_end"]
+        for k in range(layout["v_right_layers"]):
+            z = base_right + (k * h_amp) + (h_amp / 2.0)
+            for (x, y) in centres_v:
+                xs.append(x); ys.append(y); zs.append(z); typ.append("V")
 
     return pd.DataFrame({"x": xs, "y": ys, "z": zs, "type": typ})
 
 
 def coords_rect_all(d_tanc, l_tanc, w_env, d_env, h_env):
-    R_tanc = d_tanc / 2.0
-
-    centres_v, _ = genera_rectangular_optimitzat(R_tanc, w_env, d_env)
-    layers_v = math.floor(l_tanc / max(h_env, 1e-9))
+    layout = best_rect_layout_accessible(d_tanc, l_tanc, w_env, d_env, h_env)
+    centres_v = layout["centres_v"]
+    centres_h = layout["centres_h"]
 
     xs, ys, zs, typ = [], [], [], []
 
-    for k in range(layers_v):
+    for k in range(layout["v_left_layers"]):
         z = (k * h_env) + (h_env / 2.0)
         for (x, y) in centres_v:
             xs.append(x); ys.append(y); zs.append(z); typ.append("V")
 
-    h_restant = l_tanc - (layers_v * h_env)
+    if layout["n_h_layers"] > 0 and layout["h_start"] is not None:
+        for j in range(layout["n_h_layers"]):
+            z = layout["h_start"] + (layout["layer_thickness"] / 2.0) + (j * layout["layer_thickness"])
+            for (x, y) in centres_h:
+                xs.append(x); ys.append(y); zs.append(z); typ.append(layout["mode"])
 
-    capes_a = int(math.floor(h_restant / max(w_env, 1e-9)))
-    centres_a, _ = genera_rectangular_optimitzat(R_tanc, h_env, d_env) if capes_a > 0 else ([], 0.0)
-    total_a = capes_a * len(centres_a)
-
-    capes_b = int(math.floor(h_restant / max(d_env, 1e-9)))
-    centres_b, _ = genera_rectangular_optimitzat(R_tanc, w_env, h_env) if capes_b > 0 else ([], 0.0)
-    total_b = capes_b * len(centres_b)
-
-    z_base = layers_v * h_env
-
-    if total_a >= total_b and total_a > 0:
-        for capa in range(capes_a):
-            z = z_base + (capa * w_env) + (w_env / 2.0)
-            for (x, y) in centres_a:
-                xs.append(x); ys.append(y); zs.append(z); typ.append("A")
-    elif total_b > 0:
-        for capa in range(capes_b):
-            z = z_base + (capa * d_env) + (d_env / 2.0)
-            for (x, y) in centres_b:
-                xs.append(x); ys.append(y); zs.append(z); typ.append("B")
+    if layout["n_h_layers"] > 0 and layout["h_end"] is not None:
+        base_right = layout["h_end"]
+        for k in range(layout["v_right_layers"]):
+            z = base_right + (k * h_env) + (h_env / 2.0)
+            for (x, y) in centres_v:
+                xs.append(x); ys.append(y); zs.append(z); typ.append("V")
 
     return pd.DataFrame({"x": xs, "y": ys, "z": zs, "type": typ})
 
@@ -303,7 +494,7 @@ def fixed_mix_per_cycle(machine_name, vessel_len_mm, cap_L1, cap_L2):
       - H525: 5 petits  OR  3 grans + 1 petit
     """
     if "420" in machine_name:
-        combos = [(4, 0), (0, 3)]  # (k_p, k_g)
+        combos = [(4, 0), (0, 3)]
     else:
         combos = [(5, 0), (1, 3)]
 
@@ -323,11 +514,6 @@ def fixed_mix_per_cycle(machine_name, vessel_len_mm, cap_L1, cap_L2):
 
 
 def units_last_container_last_cycle(N, k_petit, k_gran, cap_petit, cap_gran):
-    """
-    Supòsit:
-    - A cada cicle omples contenidors en aquest ordre: primer GRANS, després PETITS.
-    - Retorna quantes unitats té l'últim contenidor de l'últim cicle.
-    """
     caps = ([int(cap_gran)] * int(k_gran)) + ([int(cap_petit)] * int(k_petit))
     if not caps:
         return 0, 0, 0
@@ -357,21 +543,15 @@ def units_last_container_last_cycle(N, k_petit, k_gran, cap_petit, cap_gran):
 def evaluate_machine(
     machine_name: str,
     vessel_len_mm: float,
-    nonlab_cost_cycle: float,           # cost fix sense MOD
+    nonlab_cost_cycle: float,
     cap_p_ordered: int, cap_g_ordered: int,
     N: int,
-    labor_cost_per_hour: float,         # variable editable
-    t_per_container_ordered: float,     # min/contenidor
-    t_per_container_random: float,      # min/contenidor
-    t_process_minutes: float,           # min/cicle (dins màquina)
-    density_factor_random: float,       # pèrdua densitat
+    labor_cost_per_hour: float,
+    t_per_container_ordered: float,
+    t_per_container_random: float,
+    t_process_minutes: float,
+    density_factor_random: float,
 ):
-    """
-    Cost total = cicles * (nonlab_cost_cycle + MOD_real/cicle)
-    MOD_real/cicle = (minuts_totals_cicle / 60) * €/hora
-    minuts_totals_cicle = (contenidors/cicle * temps_per_contenidor) + temps_proces
-    """
-
     def score_mode(mode: str):
         if mode == "ORDENAT":
             cap_p = int(cap_p_ordered)
@@ -390,7 +570,8 @@ def evaluate_machine(
 
         rows = []
         for _, r in mix.iterrows():
-            kp = int(r["k_petit"]); kg = int(r["k_gran"])
+            kp = int(r["k_petit"])
+            kg = int(r["k_gran"])
             cont_per_cycle = int(r["contenidors_per_cicle"])
             u_cycle = int(r["unitats_per_cicle"])
             cycles = int(math.ceil(int(N) / u_cycle)) if u_cycle > 0 else 10**9
@@ -758,13 +939,29 @@ def render_3d_rect(fig_title, d_tanc, l_tanc, w_env, d_env, h_env, units_in_cont
 # ==========================================================
 # UI
 # ==========================================================
-st.title("HPP Load Planner — ORDENAT vs RANDOM (amb €/hora + temps procés)")
+st.title("HPP Load Planner — ORDENAT vs RANDOM")
 
 with st.sidebar:
-    st.header("Inputs")
+    st.header("Inputs generals")
     N = st.number_input("Unitats comanda (N)", min_value=1, value=2000, step=10)
     d_tanc = st.number_input("Diàmetre del tanc (mm)", min_value=1.0, value=380.0, step=1.0)
-    forma = st.selectbox("Forma producte", ["Cilíndric", "Rectangular"])
+
+    st.divider()
+    st.header("Tipus d'envàs / producte")
+    preset_name = st.selectbox("Preset de producte", list(PRODUCT_PRESETS.keys()))
+    preset = PRODUCT_PRESETS[preset_name]
+
+    family = st.selectbox(
+        "Família producte",
+        ["Sòlid", "Líquid"],
+        index=0 if preset["family"] == "Sòlid" else 1
+    )
+
+    forma = st.selectbox(
+        "Forma producte",
+        ["Cilíndric", "Rectangular"],
+        index=0 if preset["shape"] == "Cilíndric" else 1
+    )
 
     st.divider()
     st.header("Economia")
@@ -792,24 +989,35 @@ col1, col2 = st.columns([1.15, 0.85])
 # ==========================================================
 if forma == "Cilíndric":
     with col1:
-        st.subheader("Paràmetres cilíndric")
-        d_amp = st.number_input("Diàmetre ampolla (mm)", min_value=0.1, value=50.0, step=0.5)
-        h_amp = st.number_input("Alçada ampolla (mm)", min_value=0.1, value=150.0, step=0.5)
+        st.subheader("Paràmetres cilíndrics")
+        default_d = preset["d"] if preset["shape"] == "Cilíndric" else 50.0
+        default_h = preset["h"] if preset["shape"] == "Cilíndric" else 150.0
+        d_amp = st.number_input("Diàmetre envàs (mm)", min_value=0.1, value=float(default_d), step=0.5)
+        h_amp = st.number_input("Llarg / alçada envàs (mm)", min_value=0.1, value=float(default_h), step=0.5)
 
     cap_p, perc_p = stats_cilindric(d_tanc, L1_MM, d_amp, h_amp)
     cap_g, perc_g = stats_cilindric(d_tanc, L2_MM, d_amp, h_amp)
 
 else:
     with col1:
-        st.subheader("Paràmetres rectangular")
-        w_env = st.number_input("Amplada (X) (mm)", min_value=0.1, value=40.0, step=0.5)
-        d_env = st.number_input("Profunditat (Y) (mm)", min_value=0.1, value=60.0, step=0.5)
-        h_env = st.number_input("Alçada (Z) (mm)", min_value=0.1, value=150.0, step=0.5)
+        st.subheader("Paràmetres rectangulars")
+        default_w = preset["w"] if preset["shape"] == "Rectangular" else 40.0
+        default_depth = preset["depth"] if preset["shape"] == "Rectangular" else 60.0
+        default_hz = preset["hz"] if preset["shape"] == "Rectangular" else 150.0
+
+        w_env = st.number_input("Amplada (X) (mm)", min_value=0.1, value=float(default_w), step=0.5)
+        d_env = st.number_input("Profunditat (Y) (mm)", min_value=0.1, value=float(default_depth), step=0.5)
+        h_env = st.number_input("Llargada / Alçada útil (Z) (mm)", min_value=0.1, value=float(default_hz), step=0.5)
 
     cap_p, perc_p = stats_rectangular(d_tanc, L1_MM, w_env, d_env, h_env)
     cap_g, perc_g = stats_rectangular(d_tanc, L2_MM, w_env, d_env, h_env)
 
 with col2:
+    st.subheader("Lectura ràpida")
+    st.write(f"**Preset seleccionat:** {preset_name}")
+    st.write(f"**Família:** {family}")
+    st.write(f"**Forma:** {forma}")
+    st.write("")
     st.subheader("Capacitats (ORDENAT / ideal)")
     st.write(f"**{NAME_L1}** ({int(L1_MM)} mm): **{cap_p} u** | ocupació **{perc_p:.2f}%**")
     st.write(f"**{NAME_L2}** ({int(L2_MM)} mm): **{cap_g} u** | ocupació **{perc_g:.2f}%**")
@@ -854,10 +1062,14 @@ if df_all.empty:
     st.error("No hi ha cap combinació vàlida amb les restriccions actuals.")
     st.stop()
 
-df_all = df_all.sort_values(by=["total_cost", "cycles", "units_per_cycle"], ascending=[True, True, False], kind="mergesort").reset_index(drop=True)
+df_all = df_all.sort_values(
+    by=["total_cost", "cycles", "units_per_cycle"],
+    ascending=[True, True, False],
+    kind="mergesort"
+).reset_index(drop=True)
 
 # ==========================================================
-# TAULA comparació (amb noms “bonics” però columnes internes SENSE accents)
+# TAULA comparació
 # ==========================================================
 st.divider()
 st.subheader("Comparació completa (totes les opcions)")
@@ -971,7 +1183,6 @@ with kpi6:
         f"""<div class="kpi-card"><div class="kpi-label">Temps total comanda</div><div class="kpi-value">{float(winner['total_order_time_h']):.2f} h</div></div>""",
         unsafe_allow_html=True,
     )
-
 with kpi7:
     st.markdown(
         f"""<div class="kpi-card"><div class="kpi-label">Estalvi vs alternativa</div><div class="kpi-value">{savings_eur:.2f} € ({savings_pct:.1f}%)</div></div>""",
@@ -981,6 +1192,9 @@ with kpi7:
 st.markdown(
     f"""
 **Resultat**
+- **Preset:** {preset_name}  
+- **Família:** {family}  
+- **Forma:** {forma}  
 - **Configuració per cicle:** {int(winner['k_gran'])}×{NAME_L2} + {int(winner['k_petit'])}×{NAME_L1}  
 - **Unitats/cicle:** {int(winner['units_per_cycle'])}  
 - **Cicles totals:** {int(winner['cycles'])}  
@@ -1001,9 +1215,13 @@ st.info(
     f"La configuració recomanada redueix el cost en {savings_eur:.2f} € ({savings_pct:.1f}%) respecte la segona millor opció."
 )
 
+# ==========================================================
 # 3D només si guanya ORDENAT
+# ==========================================================
 if str(winner["mode"]) == "ORDENAT":
     st.subheader("3D (només si la recomanació és ORDENAT) — disposició dins dels contenidors")
+    st.caption("La disposició 3D mostra la configuració que maximitza la capacitat.")
+
     cA, cB = st.columns(2)
     if forma == "Cilíndric":
         with cA:
@@ -1019,7 +1237,7 @@ else:
     st.info("Mode recomanat = RANDOM → no mostrem animació 3D (segons criteri del projecte).")
 
 # ==========================================================
-# EXPORTS (al final)
+# EXPORTS
 # ==========================================================
 st.divider()
 st.subheader("Descarregar pla de producció")
@@ -1028,6 +1246,8 @@ payload = {
     "inputs": {
         "N": int(N),
         "d_tanc_mm": float(d_tanc),
+        "preset": preset_name,
+        "family": family,
         "forma": forma,
         "labor_cost_per_hour": float(labor_cost_per_hour),
         "t_ordered_min_per_container": float(t_ordered),
@@ -1054,6 +1274,8 @@ plan_txt.append("HPP LOAD PLANNER — PLA DE PRODUCCIÓ FINAL")
 plan_txt.append("")
 plan_txt.append(f"N = {int(N)}")
 plan_txt.append(f"Diàmetre tanc = {float(d_tanc):.1f} mm")
+plan_txt.append(f"Preset = {preset_name}")
+plan_txt.append(f"Família = {family}")
 plan_txt.append(f"Forma = {forma}")
 plan_txt.append("")
 plan_txt.append(f"Cost fix sense MOD (€/cicle): H420={NONLAB_420:.2f} | H525={NONLAB_525:.2f}")
