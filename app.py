@@ -16,7 +16,7 @@ import plotly.graph_objects as go
 # ==========================================================
 # PAGE
 # ==========================================================
-st.set_page_config(page_title="HPP Load Planner — ORDENAT vs RANDOM", layout="wide")
+st.set_page_config(page_title="Optimització HPP", layout="wide")
 
 # ==========================================================
 # CONFIG CONTENIDORS (mm) — FIXOS
