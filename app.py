@@ -16,7 +16,7 @@ import plotly.graph_objects as go
 # ==========================================================
 # PAGE
 # ==========================================================
-st.set_page_config(page_title="Optimització HPP", layout="wide")
+st.set_page_config(page_title="Optimització màquina HPP", layout="wide")
 
 # ==========================================================
 # CONFIG CONTENIDORS (mm) — FIXOS
@@ -939,7 +939,7 @@ def render_3d_rect(fig_title, d_tanc, l_tanc, w_env, d_env, h_env, units_in_cont
 # ==========================================================
 # UI
 # ==========================================================
-st.title("HPP Load Planner — ORDENAT vs RANDOM")
+st.title("Optimització HPP")
 
 with st.sidebar:
     st.header("Inputs generals")
@@ -1270,7 +1270,7 @@ payload = {
 }
 
 plan_txt = []
-plan_txt.append("HPP LOAD PLANNER — PLA DE PRODUCCIÓ FINAL")
+plan_txt.append("OPTIMITZACIÓ HPP — PLA DE PRODUCCIÓ FINAL")
 plan_txt.append("")
 plan_txt.append(f"N = {int(N)}")
 plan_txt.append(f"Diàmetre tanc = {float(d_tanc):.1f} mm")
@@ -1309,7 +1309,7 @@ with c1:
     st.download_button(
         "⬇️ Descarregar pla de producció (TXT)",
         data=plan_txt,
-        file_name="hpp_pla_produccio_final.txt",
+        file_name="optimitzacio_hpp_pla_produccio_final.txt",
         mime="text/plain"
     )
 with c2:
